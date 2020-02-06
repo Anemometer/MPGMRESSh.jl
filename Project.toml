@@ -1,0 +1,6 @@
+[deps]
+BlockDiagonals = "0a1fb500-61f7-11e9-3c65-f5ef3456f9f0"
+IterativeSolvers = "42fd0dbc-a981-5370-80f2-aaf504508153"
+
+[compat]
+julia = "1"
