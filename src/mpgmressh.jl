@@ -1,25 +1,25 @@
 import Base: iterate 
-using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers
+using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse
 export mpgmressh, mpgmressh!
 
 # This code draws heavily from the style already adopted for gmres.jl of IterativeSolvers.jl.
 
 # !TODO: make BlockArnoldi immutable by making BlockArnoldiStep work index-bound in-place
-mutable struct BlockArnoldiDecomp{elT, opT, shiftT, precT}
-    A::opT # (finite-dimensional) linear operator A (optional)
-    M::opT
+mutable struct BlockArnoldiDecomp{elT, opA, opM, shiftT, precT}
+    A::opA # (finite-dimensional) linear operator A (optional)
+    M::opM
     V::Array{Matrix{elT}, 1} # orthonormal part of the Block Arnoldi decomposition in the form of matrix blocks
     Z::Matrix{elT} # search directions
     H::Matrix{elT} # shift-independent part of the Hessenberg matrices
     E::Matrix{elT} # E,T: auxiliary matrices to recover the Arnoldi relations for each shift σ
-    T::BlockDiagonal{elT, Matrix{elT}}
+    T::BlockDiagonal{shiftT, Matrix{shiftT}}
 
     precons::Array{precT, 1} # shift-and-invert preconditioners
     allshifts::Array{shiftT, 1} # all shift parameters σ
     #preconshifts::Array{shiftT, 1} # shift parameters to be used for building the shift-and-invert preconditioners (optional if preconditioners are passed by the user)
 end
 # !TODO: figure out a sensible name for the type parameter T conflicting with the matrix name T
-function BlockArnoldiDecomp(A::opT, M::opT, cycleit::Int, allshifts::Array{shiftT, 1}, preconshifts::Array{shiftT, 1}, precons::Array{precT, 1}, elT::Type) where {opT, shiftT, precT}
+function BlockArnoldiDecomp(A::opA, M::opM, cycleit::Int, allshifts::Array{shiftT, 1}, preconshifts::Array{shiftT, 1}, precons::Array{precT, 1}, elT::Type) where {opA, opM, shiftT, precT}
     nprecons = length(preconshifts)
     H = zeros(elT, nprecons * cycleit + 1, nprecons * cycleit)
     #V = zeros(T, size(M, 1), nprecons * cycleit + 1)
@@ -136,7 +136,7 @@ function mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons;
     precon_solves = 0
 
     # initiate workspace and residual
-    Wspace = zeros(size(M, 2), nprecons)
+    Wspace = zeros(T, size(M, 2), nprecons)
     residuals = Residual(cycleit * nprecons + 1, nshifts, T)
     residuals.β = init!(barnoldi, b, residuals)
 
@@ -183,7 +183,12 @@ end
 function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3, kwargs...) where shiftT 
     # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
     # !TODO: cast shifts back into general shift type
-    preconshifts = (10.) .^ (LinRange(log10(minimum(real(shifts))), log10(maximum(real(shifts))), nprecons))
+    # shiftT's can be real or complex
+    # the application in mind here is that either the shifts are real or purely imaginary
+    preconshifts = (10.) .^ (LinRange(log10(minimum(abs.(shifts))), log10(maximum(abs.(shifts))), nprecons))
+    if shiftT <: Complex
+        preconshifts = 1.0im .* preconshifts
+    end
     #@printf("mpgmressh_iterable preconshifts: %d\n", length(preconshifts))
 
     mpgmressh_iterable!(x, b, A, M, shifts, preconshifts; kwargs...)
@@ -253,7 +258,8 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     # compute solution iterate using fast Hessenberg
     for (i, σ) in enumerate(gsh.barnoldi.allshifts)
         # solve minimal residual problem for σ
-        y = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
+        y, res = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
+        #@printf("shifted lsq residual at %d: %f\n", i, res)
         #@printf("barnoldi.Z[:,1:size(y,1)-1] size: (%d,%d)\n", size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 1), size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 2))
         #@printf("y[1:end-1] size: (%d, %d)\n", size(y,1) - 1, size(y,2) - 1)
         gsh.x[i] = gsh.barnoldi.Z[:, 1:size(y, 1) - 1] * y[1:end-1]
@@ -280,15 +286,19 @@ function solve_shifted_lsq(barnoldi::BlockArnoldiDecomp{T}, σ::shiftT, β::resT
     nprecons = length(barnoldi.precons)
     # !TODO: optimize using views
     Hσ = IterativeSolvers.FastHessenberg(barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)])))
+    #Hσ = qr(barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)])))
+    #Hbak = barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)]))
     e1 = zeros(T, size(Hσ, 1), 1) # rhs has as many rows as Hσ
     e1[1] = β
+    b = deepcopy(e1)
 
     global hsigafter = Matrix(barnoldi.H)
     global hsig = deepcopy(Hσ)
-
+    
     ldiv!(Hσ, e1)
 
-    return e1
+    return e1, norm(b - hsig.H * e1[1:end-1])
+    #return e1, norm(b - Hbak * e1[1:end-1])
 end
 
 """
@@ -361,7 +371,7 @@ function mpgmressh(b, A, M, shifts; kwargs...) where solT
         fill!(x[k], zero(T))
     end
 
-    display(typeof(x))
+    #display(typeof(x))
 
     return mpgmressh!(x, b, A, M, shifts; kwargs...)
 end
@@ -386,19 +396,9 @@ function mpgmressh!(x, b, A, M, shifts;
     btol = btol, atol = atol, cycleit = cycleit, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
 
-    for (it, res) in enumerate(iterable)
+    @time for (it, res) in enumerate(iterable)
         verbose && @printf("%3d\t%3d\t%1.2e\n", 1 + div(it - 1, cycleit), 1 + mod(it - 1, cycleit), maximum(res))
     end
 
     log ? (x, iterable) : x
 end
-
-"""
-function mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons; 
-    btol = sqrt(eps(real(eltype(b)))),
-    atol = btol,
-    cycleit::Int = min(20, size(M,2)),
-    maxiter::Int = size(M,2),
-    convergence = Convergence.standard,
-    explicit_residual = false
-"""
