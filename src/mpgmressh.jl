@@ -179,6 +179,7 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}, preconshifts:
     mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons; kwargs...)
 end
 
+global preshifts = 0
 # in case A, M are given explicitly, but not the preconditioning shifts
 function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3, kwargs...) where shiftT 
     # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
@@ -190,6 +191,7 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3,
         preconshifts = 1.0im .* preconshifts
     end
     #@printf("mpgmressh_iterable preconshifts: %d\n", length(preconshifts))
+    global preshifts = preconshifts
 
     mpgmressh_iterable!(x, b, A, M, shifts, preconshifts; kwargs...)
 end
@@ -237,8 +239,8 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     gsh.precon_solves += nprecons
     
     global hsigbefore = gsh.barnoldi.H
-    # execute the block orthogonalization routine; iteration = gsh.k-1
-    #gsh.mv_products += BlockArnoldiStep!(gsh.Wspace, gsh.barnoldi.V, gsh.barnoldi.H[:, (1 + iteration * nprecons):((iteration + 1) * nprecons)])
+    # execute the block orthogonalization routine
+    gsh.Wspace = gsh.barnoldi.M * gsh.Wspace
     gsh.mv_products += BlockArnoldiStep!(gsh.Wspace, gsh.barnoldi.V, view(gsh.barnoldi.H, :, (1 + (gsh.k - 1) * nprecons):(gsh.k * nprecons)))
 
     # !TODO: develop a method for a proper residual update
@@ -349,11 +351,10 @@ function MPDirections!(barnoldi::BlockArnoldiDecomp, k::Int, Wspace)
     #display("WSpace size: " * string(size(Wspace)))
     #display("barnoldi.Z indices: " * string((size(barnoldi.Z, 1),(k-1)*nprecons + 1, k*nprecons)))
     
-    #@printf("Wspace = \n")
+    #@printf("Wspace after MPDirections = \n")
     #display(Wspace)
 
     # add the search directions to Z
-    #copyto!(barnoldi.Z[:,((k-1)*nprecons + 1):(k*nprecons)], Wspace)
     copyto!(view(barnoldi.Z, :, ((k-1)*nprecons + 1):(k*nprecons)), Wspace)
     #@printf("barnoldi.Z[:,((k-1)*nprecons + 1):(k*nprecons)]: \n")
     #display(barnoldi.Z[:, ((k-1)*nprecons + 1):(k*nprecons)])
@@ -371,7 +372,17 @@ function mpgmressh(b, A, M, shifts; kwargs...) where solT
         fill!(x[k], zero(T))
     end
 
-    #display(typeof(x))
+    @printf("typeof(x): ")
+    display(typeof(x))
+    @printf("typeof(b): ")
+    display(typeof(b))
+
+    @printf("typeof(shifts): ")
+    display(typeof(shifts))
+
+    @printf("typeof(M, A): ")
+    display(typeof(M))
+    display(typeof(A))
 
     return mpgmressh!(x, b, A, M, shifts; kwargs...)
 end
