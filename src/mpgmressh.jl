@@ -1,4 +1,5 @@
 import Base: iterate 
+import LinearAlgebra: givensAlgorithm
 using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse
 export mpgmressh, mpgmressh!
 
@@ -61,18 +62,18 @@ function BlockArnoldiDecomp(A::opA, M::opM, cycleit::Int, allshifts::Array{shift
     return BlockArnoldiDecomp(A, M, V, Z, H, E, T, precons, allshifts, nprecons)
 end
 
-mutable struct Residual{T, resT}
+mutable struct Residual{elT, resT}
     absres::Array{resT, 1}  # Array of absolute residuals for each shift σ
-    accumulator::Array{resT, 1} # Placeholder for updating the residual per iteration for each shift σ
-    nullvec::Matrix{T} # Vectors for each Hessenberg matrix for computing the residuals
+    current::Array{resT, 1} # Placeholder for updating the residual per iteration for each shift σ
+    accumulator::Matrix{elT} # Vectors for each Hessenberg matrix for computing the residuals
     β::resT # initial residual which is the norm of b since the initial iterate is set to 0
 end
 
-Residual(order::Int, nshifts::Int, T::Type) = Residual{T, real(T)}(
-    ones(T, nshifts),
-    ones(T, nshifts),
-    ones(T, order, nshifts),
-    one(real(T))
+Residual(order::Int, nshifts::Int, elT::Type) = Residual{elT, real(elT)}(
+    ones(elT, nshifts),
+    ones(elT, nshifts),
+    ones(elT, order, nshifts),
+    one(real(elT))
 )
 
 """
@@ -139,7 +140,8 @@ function mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons;
     # initiate workspace and residual
     Wspace = zeros(T, size(M, 2), nprecons)
     residuals = Residual(cycleit * nprecons + 1, nshifts, T)
-    residuals.β = init!(barnoldi, b, residuals)
+    β = init!(barnoldi, b, residuals)
+    init_residual!(residuals, β)
 
     # the iterable starts with parameter k=1 while the 
     # iteration argument in iterate will be initialized with 0
@@ -298,6 +300,8 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     #    gsh.residual.absres .= [norm(gsh.b - (gsh.barnoldi.A + shift .* gsh.barnoldi.M) * gsh.x[i]) for (i, shift) in enumerate(gsh.barnoldi.allshifts)]
     #end
 
+    hh = update_residual!(gsh.residual, gsh.barnoldi, gsh.k)
+
     # !TODO: compute iterate only after restart cycle length is concluded once
     # an efficient method for residual computation is found 
 
@@ -308,6 +312,10 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
         # solve minimal residual problem for σ
         y, res = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
         #@printf("shifted lsq residual at %d, %f: %f\n", i, imag(σ), res)
+
+        # check if hh contains the right entries 
+        #@printf("hsig[end-3:end, end-2:end] == hh[:,(i-1)*3 + 1:i*3]? %d \n", hsig.H[end-3:end,end-2:end] == hh[:,(i-1)*3 + 1:i*3])
+        #@printf("hsig[end - 1, end] == h? %d\n", hsig.H[end-1,end] == hh[1,i])
         
         #@printf("barnoldi.Z[:,1:size(y,1)-1] size: (%d,%d)\n", size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 1), size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 2))
         #@printf("y[1:end-1] size: (%d, %d)\n", size(y,1) - 1, size(y,2) - 1)
@@ -323,7 +331,10 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
         #@printf("Ended cycle!\n")
         gsh.k = 1
         gsh.residual.β = init!(gsh.barnoldi, gsh.b, gsh.residual)
-    end    
+    end
+
+    # experimental: use the newly implemented Givens rotation method for convergence monitoring
+    copyto!(gsh.residual.absres, gsh.residual.current)
 
     gsh.residual.absres, iteration + 1
 end
@@ -415,6 +426,66 @@ function MPDirections!(barnoldi::BlockArnoldiDecomp, k::Int, Wspace)
     #display(barnoldi.Z[:, ((k-1)*nprecons + 1):(k*nprecons)])
 end
 
+function init_residual!(r::Residual{elT, resT}, β) where {elT, resT}
+    r.accumulator = zeros(elT, size(r.accumulator))
+    view(r.accumulator, 1, :) .= β * one(resT)
+    r.β = β
+    #@printf("accumulator after init: \n")
+    #display(r.accumulator)
+end
+
+global hh = 0
+
+# compute the residual for every shift by applying the appropriate Givens rotation 
+# to the accumulated rhs of the minimal residual problem
+function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int)
+    global hh = zeros(ComplexF64, 4, 3*size(barnoldi.allshifts, 1))
+    for (i, σ) in enumerate(barnoldi.allshifts)
+        # obtain the rightmost lower left block of the shifted upper Hessenberg matrix H(σ)
+        #h  = (σ - barnoldi.T[end, end]) * barnoldi.H[k * barnoldi.nprecons, k * barnoldi.nprecons]
+        #h1 = (σ - barnoldi.T[end, end]) * barnoldi.H[k * barnoldi.nprecons + 1, k * barnoldi.nprecons]
+
+        Hkσ = barnoldi.H[((k-1) * barnoldi.nprecons + 1):(k * barnoldi.nprecons + 1), ((k-1) * barnoldi.nprecons + 1):(k * barnoldi.nprecons)] * (UniformScaling(σ) - BlockDiagonals.getblock(barnoldi.T, BlockDiagonals.nblocks(barnoldi.T)))
+        Hkσ[1,:] .+= 1.0
+
+        cols = size(Hkσ, 2)
+        #copyto!(hh[:,(i-1)*cols+1:i*cols], Hkσ)
+        copyto!(view(hh, :,(i-1)*cols+1:i*cols), Hkσ)
+        
+        # apply Givens rotations to triangularize Hkσ to the accumulator
+        for j=1:cols
+            c, s, _ = givensAlgorithm(Hkσ[j,j], Hkσ[j+1,j])
+            # apply Givens rotation to first column 
+            tmp = -conj(s) * Hkσ[j,j] + c * Hkσ[j+1,j]
+            Hkσ[j,j] = c * Hkσ[j,j] + s * Hkσ[j+1,j]
+            Hkσ[j+1,j] = tmp
+            #@printf("abs(-conj(s) * acc[k,i]): %f\n", abs(-conj(s) * r.accumulator[k, i]))
+
+            # apply Givens rotation to all subsequent columns 
+            for l=j+1:cols
+                tmp = -conj(s) * Hkσ[j,l] + c * Hkσ[j+1,l]
+                Hkσ[j,l] = c * Hkσ[j,l] + s * Hkσ[j+1,l]
+                Hkσ[j+1,l] = tmp
+            end
+
+            # apply Givens rotation to the right hand side (being the accumulator)            
+            offset = barnoldi.nprecons * (k - 1) + 1
+            tmp = -conj(s) * r.accumulator[offset + (j-1), i] + c * r.accumulator[offset+j, i]
+            r.accumulator[offset + (j-1), i] = c * r.accumulator[offset + (j-1), i] + s * r.accumulator[offset+j, i]
+            r.accumulator[offset+j, i] = tmp
+            #if i==size(barnoldi.allshifts,1)
+            #    @printf("setting r.acc[offset+j,i]: (%d,%d)\n", offset+j, i)
+            #end
+        end
+
+        # the residual is now given by the absolute value of the (k+1)st entry of the accumulator
+        r.current[i] = abs(r.accumulator[barnoldi.nprecons*(k-1) + 1 + cols, i])
+    end
+
+    @printf("max acc: %1.2e \n", maximum(r.current))
+    return hh
+end
+
 function mpgmressh(b, A, M, shifts; kwargs...) where solT
     # until I can think of something better, use a divtype for M
     # this should probably be replaced by some generic operator type 
@@ -427,17 +498,17 @@ function mpgmressh(b, A, M, shifts; kwargs...) where solT
         fill!(x[k], zero(T))
     end
 
-    @printf("typeof(x): ")
-    display(typeof(x))
-    @printf("typeof(b): ")
-    display(typeof(b))
+    #@printf("typeof(x): ")
+    #display(typeof(x))
+    #@printf("typeof(b): ")
+    #display(typeof(b))
 
-    @printf("typeof(shifts): ")
-    display(typeof(shifts))
+    #@printf("typeof(shifts): ")
+    #display(typeof(shifts))
 
-    @printf("typeof(M, A): ")
-    display(typeof(M))
-    display(typeof(A))
+    #@printf("typeof(M, A): ")
+    #display(typeof(M))
+    #display(typeof(A))
 
     return mpgmressh!(x, b, A, M, shifts; kwargs...)
 end
