@@ -6,7 +6,7 @@ export mpgmressh, mpgmressh!
 
 # !TODO: make BlockArnoldi immutable by making BlockArnoldiStep work index-bound in-place
 mutable struct BlockArnoldiDecomp{elT, opA, opM, shiftT, precT}
-    A::opA # (finite-dimensional) linear operator A (optional)
+    A::opA # (finite-dimensional) linear operator A
     M::opM
     V::Array{Matrix{elT}, 1} # orthonormal part of the Block Arnoldi decomposition in the form of matrix blocks
     Z::Matrix{elT} # search directions
@@ -16,6 +16,7 @@ mutable struct BlockArnoldiDecomp{elT, opA, opM, shiftT, precT}
 
     precons::Array{precT, 1} # shift-and-invert preconditioners
     allshifts::Array{shiftT, 1} # all shift parameters σ
+    nprecons::Int64
     #preconshifts::Array{shiftT, 1} # shift parameters to be used for building the shift-and-invert preconditioners (optional if preconditioners are passed by the user)
 end
 # !TODO: figure out a sensible name for the type parameter T conflicting with the matrix name T
@@ -57,7 +58,7 @@ function BlockArnoldiDecomp(A::opA, M::opM, cycleit::Int, allshifts::Array{shift
     T = BlockDiagonal([Matrix(Diagonal(preconshifts)) for k=1:cycleit])
     #display(typeof(T))
 
-    return BlockArnoldiDecomp(A, M, V, Z, H, E, T, precons, allshifts)
+    return BlockArnoldiDecomp(A, M, V, Z, H, E, T, precons, allshifts, nprecons)
 end
 
 mutable struct Residual{T, resT}
@@ -165,14 +166,11 @@ end
 # in case A, M and the preconditioning shifts are given explicitly
 function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}, preconshifts::Array{shiftT, 1}; kwargs...) where shiftT
     LU = lu(A + preconshifts[1] .* M)
-    precons = Array{typeof(LU)}(undef, length(preconshifts))
-    #push!(precons, LU)
+    nprecons = length(preconshifts)
+    precons = Array{typeof(LU)}(undef, nprecons)
     precons[1] = LU
 
-    #@printf("mpgmres_iterable length(preconshifts): %d\n",length(preconshifts))
-
-    for i = 2:length(preconshifts)
-        #push!(precons, lu(A + preconshifts[i] .* M))
+    for i = 2:nprecons
         precons[i] = lu(A + preconshifts[i] .* M)
     end
 
@@ -183,16 +181,64 @@ global preshifts = 0
 # in case A, M are given explicitly, but not the preconditioning shifts
 function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3, kwargs...) where shiftT 
     # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
-    # !TODO: cast shifts back into general shift type
     # shiftT's can be real or complex
-    # the application in mind here is that either the shifts are real or purely imaginary
-    preconshifts = (10.) .^ (LinRange(log10(minimum(abs.(shifts))), log10(maximum(abs.(shifts))), nprecons))
+    # julia's convention of putting 10^(log10(0)) = 0 makes this construction safe
+    
+    if shiftT <: Complex 
+        # extract the machine epsilon for the given shift datatype 
+        paramType = fieldtype(shiftT, 1)
+        ε = eps(paramType)
+    else
+        paramtype = shiftT
+        ε = eps(shiftT)
+    end
+
+    # shift real and imaginary parts (if nonempty) both by their minimum
+    # values to move the ranges above zero, sample equidistantly log-spaced 
+    # and then shift back into the the original range 
+    minshiftsIm = minimum(imag.(shifts))
+    maxshiftsIm = maximum(imag.(shifts))
+    minshiftsRe = minimum(real.(shifts))
+    maxshiftsRe = maximum(real.(shifts))
+
+    biasIm = max(ε, abs(minshiftsIm))
+    biasRe = max(ε, abs(minshiftsRe))
+
+    #!TODO: rework preconshift calculation for 
+    # negative shifts to definitely include largest shift
+
+    if minshiftsIm == maxshiftsRe
+        preconshiftsIm = zeros(paramType, nprecons)
+    else
+        if minshiftsIm < 0 
+            preconshiftsIm = -2*abs(minshiftsIm) .+ (10.) .^ LinRange(log10(biasIm), log10(2*biasIm + maxshiftsIm), nprecons)
+        else
+            preconshiftsIm = (10.) .^ LinRange(log10(biasIm), log10(maxshiftsIm), nprecons)
+        end
+    end
+
+    if minshiftsRe == maxshiftsRe
+        preconshiftsRe = zeros(paramType, nprecons)
+    else
+        if minshiftsRe < 0
+            preconshiftsRe = -2*abs(minshiftsRe) .* (10.) .^ LinRange(log10(biasRe), log10(2*biasRe + maxshiftsRe), nprecons)
+        else
+            preconshiftsRe = (10.) .^ LinRange(log10(biasRe), log10(maxshiftsRe), nprecons) 
+        end
+    end
+
+
+    #preconshiftsRe = (10.) .^ (LinRange(log10(minimum(real.(shifts))), log10(maximum(real.(shifts))), nprecons))
+    #preconshiftsIm = (10.) .^ (LinRange(log10(minimum(imag.(shifts))), log10(maximum(imag.(shifts))), nprecons))
     if shiftT <: Complex
-        preconshifts = 1.0im .* preconshifts
+        preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
+    else
+        preconshifts = preconshiftsRe
     end
     #@printf("mpgmressh_iterable preconshifts: %d\n", length(preconshifts))
     global preshifts = preconshifts
 
+    #preconshifts = 1im .* collect(LinRange(minimum(imag.(shifts)), maximum(imag.(shifts)), nprecons))
     mpgmressh_iterable!(x, b, A, M, shifts, preconshifts; kwargs...)
 end
 
@@ -261,7 +307,8 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     for (i, σ) in enumerate(gsh.barnoldi.allshifts)
         # solve minimal residual problem for σ
         y, res = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
-        #@printf("shifted lsq residual at %d: %f\n", i, res)
+        #@printf("shifted lsq residual at %d, %f: %f\n", i, imag(σ), res)
+        
         #@printf("barnoldi.Z[:,1:size(y,1)-1] size: (%d,%d)\n", size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 1), size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 2))
         #@printf("y[1:end-1] size: (%d, %d)\n", size(y,1) - 1, size(y,2) - 1)
         gsh.x[i] = gsh.barnoldi.Z[:, 1:size(y, 1) - 1] * y[1:end-1]
@@ -289,18 +336,20 @@ function solve_shifted_lsq(barnoldi::BlockArnoldiDecomp{T}, σ::shiftT, β::resT
     # !TODO: optimize using views
     Hσ = IterativeSolvers.FastHessenberg(barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)])))
     #Hσ = qr(barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)])))
-    #Hbak = barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)]))
+    Hbak = barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)]))
+
     e1 = zeros(T, size(Hσ, 1), 1) # rhs has as many rows as Hσ
     e1[1] = β
-    b = deepcopy(e1)
+    e2 = deepcopy(e1)
 
     global hsigafter = Matrix(barnoldi.H)
     global hsig = deepcopy(Hσ)
     
+    #ldiv!(Hσ, e1)
     ldiv!(Hσ, e1)
 
-    return e1, norm(b - hsig.H * e1[1:end-1])
-    #return e1, norm(b - Hbak * e1[1:end-1])
+    #return e1, norm(b - hsig.H * e1[1:end-1])
+    return e1, norm(e2 - Hbak * e1[1:end-1])
 end
 
 """
@@ -317,11 +366,17 @@ function BlockArnoldiStep!(W::Matrix{T}, V::Array{Matrix{T}, 1}, H::StridedVecOr
     cumulsize = 0 # index of last filled row of Hessenberg matrix 
     mv_products = 0 # number of matrix-vector products
 
+    #@printf("BStep: types of W, V, H: \n")
+    #display(typeof(W))
+    #display(typeof(V))
+    #display(typeof(H))
+
     for (i,v) in enumerate(V)
         bsize = size(v, 2) # blocksize is function of BlockDiagonals
         #@printf("size(V): (%d, %d)\n", size(v,1), size(v,2))
         #@printf("size(W): (%d, %d)\n", size(W,1), size(W,2))
-        H[cumulsize+1:cumulsize+bsize, :] = adjoint(v) * W 
+        #H[cumulsize+1:cumulsize+bsize, :] = adjoint(v) * W 
+        copyto!(view(H, cumulsize + 1:cumulsize + bsize, :), adjoint(v) * W)
         mv_products += bsize * size(W, 2)
         W = W - v * H[cumulsize+1:cumulsize+bsize, :]
         cumulsize += bsize
