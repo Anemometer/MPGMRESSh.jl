@@ -71,7 +71,8 @@ mutable struct Residual{elT, resT}
 end
 
 Residual(order::Int, nshifts::Int, elT::Type) = Residual{elT, real(elT)}(
-    ones(elT, nshifts),
+    #ones(elT, nshifts),
+    Inf .* ones(real(elT), nshifts),
     ones(elT, nshifts),
     ones(elT, order, nshifts),
     ones(elT, nshifts),
@@ -247,6 +248,8 @@ function converged(gsh::MPGMRESShIterable)
     has_converged = false
     
     if gsh.convergence == standard
+        #@printf("absres, β, btol: %1.5e, %1.5e, %1.5e\n", maximum(gsh.residual.absres), gsh.residual.β, gsh.btol)
+        #@printf("absres/β: %1.20e\n", maximum(gsh.residual.absres ./ gsh.residual.β))
         has_converged = (maximum(gsh.residual.absres ./ (gsh.residual.β)) < gsh.btol)
     end
 

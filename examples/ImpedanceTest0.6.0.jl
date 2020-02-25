@@ -29,6 +29,8 @@ module Example150_Impedance1D
 using Printf
 using VoronoiFVM
 using LaTeXStrings
+using SparseArrays
+using LinearAlgebra
 
 include("../src/MPGMRESSh.jl")
 
@@ -206,21 +208,72 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
     # each index corresponding to the respective shift iω
     iωs = 1.0im .* allomega
 
-    # F needs reshaping into a column vector
-    #isys.F[1] = 1.0
-    #sys.matrix[1,1] = 1.0
-    #sys.matrix[end,end] = 1.0
+    # jacobi preconditioning combats numerical inflation of errors
+    # in the absolute residual
+    K = sparse(sys.matrix)
+    M = deepcopy(isys.storderiv)
+    b = deepcopy(isys.F.node_dof)
+    jac = diag(K)
+    
+    for (i, el) in enumerate(jac)
+        K[i, :] .*= 1/el
+        M[i, :] .*= 1/el
+        b[i] *= 1/el
+    end
+
+    @printf("MPGMRESSh solution without preconditioning: \n")
+    # -rhs F needs reshaping into a column vector
+    # -we need to make convergence decisions based on the absolute residual 
+    #  due to the penalty factor on the rhs which fools the method into 
+    #  instantaneous convergence after one iteration if relative residuals are used
+    #
+    # however, the implemented Ayachour residual update helps cancel out this problem
+    # since it scales with the penalty parameter in its numerator and denominator equally
     UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = 3, maxiter = 20,
                                 log = true, verbose = true, btol=1.0e-10,
                                 convergence = MPGMRESSh.absolute)
 
-
-    # now calculate the associated measurements
+    # now calculate the associated measurements for the unpreconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))
     for (i, iω) in enumerate(iωs)
         allILMPGMRES[i] = (dmeas_stdy*values(UZω[i]))[1] + iω * (dmeas_tran*values(UZω[i]))[1]
     end
 
+    # the large penalty factor, however, spoils the absolute residual due to numerical artifacts
+    absres = [norm(it_mpgmressh.b - (it_mpgmressh.barnoldi.A + shift .* it_mpgmressh.barnoldi.M) * it_mpgmressh.x[i]) for (i, shift) in enumerate(it_mpgmressh.barnoldi.allshifts)]
+    @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
+    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
+
+    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
+    @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
+    maxnormILs = maximum(abs.(allIL - allILMPGMRES))
+    @printf("Maximum linf norm of resulting measurements: %1.20e\n\n", maxnormILs)
+
+    @printf("----------------------------------------------------------------\n\n")
+
+    @printf("MPGMRESSh solution with preconditioning: \n")
+    # the jacobi preconditioning allows us to iterate normally with respect to the 
+    # relative residual (Convergence.standard)
+    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = 3, maxiter = 20,
+                                log = true, verbose = true, btol=1.0e-10,
+                                convergence = MPGMRESSh.standard)
+
+    # now calculate the associated measurements for the jacobi-preconditioned system
+    allILMPGMRES = zeros(Complex{Float64}, length(allIL))
+    for (i, iω) in enumerate(iωs)
+        allILMPGMRES[i] = (dmeas_stdy*values(UZω[i]))[1] + iω * (dmeas_tran*values(UZω[i]))[1]
+    end
+
+    # the rescaling by the jacobi preconditioner has taken care of the excessive absolute residuals
+    # in our case, they are of course now identical to the relative residuals
+    absres = [norm(it_mpgmressh.b - (it_mpgmressh.barnoldi.A + shift .* it_mpgmressh.barnoldi.M) * it_mpgmressh.x[i]) for (i, shift) in enumerate(it_mpgmressh.barnoldi.allshifts)]
+    @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
+    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
+
+    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
+    @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
+    maxnormILs = maximum(abs.(allIL - allILMPGMRES))
+    @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
 
     # ----------------------------------------------------------------
     
@@ -236,11 +289,6 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
         #Plotter.gui(p)
         display(p)
     end
-
-    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
-    @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
-    maxnormILs = maximum(abs.(allIL - allILMPGMRES))
-    @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
 
     return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh;
 end
