@@ -1,6 +1,6 @@
 import Base: iterate 
 using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse
-export mpgmressh, mpgmressh!
+export mpgmressh, mpgmressh!, Convergence
 
 # This code draws heavily from the style already adopted for gmres.jl of IterativeSolvers.jl.
 
@@ -263,6 +263,7 @@ function converged(gsh::MPGMRESShIterable)
 end
 
 done(gsh::MPGMRESShIterable, iteration::Int) = iteration >= gsh.maxiter || converged(gsh)
+#done(gsh::MPGMRESShIterable, iteration::Int) = iteration >= gsh.maxiter 
 
 function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     if done(gsh, iteration)
@@ -488,7 +489,9 @@ function mpgmressh(b, A, M, shifts; kwargs...) where solT
     # until I can think of something better, use a divtype for M
     # this should probably be replaced by some generic operator type 
     T = typeof(one(eltype(b))/one(eltype(M)))
-    
+
+    # !TODO implement sanity checks for proper 
+    # dimensionality of b, A, M    
     x = [similar(b, T)]
     fill!(x[1], zero(T))
     for k=2:length(shifts)
