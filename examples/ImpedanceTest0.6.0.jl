@@ -129,7 +129,7 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
     # Create Impeadance system from steady state
     excited_spec=1
     excited_bc=1
-    global isys=VoronoiFVM.ImpedanceSystem(sys,steadystate,excited_spec, excited_bc)
+    isys=VoronoiFVM.ImpedanceSystem(sys,steadystate,excited_spec, excited_bc)
 
     # array to contain the excitation frequencies
     allomega=zeros(0)

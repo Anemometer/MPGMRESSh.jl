@@ -1,5 +1,5 @@
 import Base: iterate 
-using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse
+using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse, Statistics
 export mpgmressh, mpgmressh!, Convergence
 
 # This code draws heavily from the style already adopted for gmres.jl of IterativeSolvers.jl.
@@ -174,8 +174,10 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}, preconshifts:
     precons = Array{typeof(LU)}(undef, nprecons)
     precons[1] = LU
 
-    for i = 2:nprecons
-        precons[i] = lu(A + preconshifts[i] .* M)
+    if nprecons >= 2
+        for i = 2:nprecons
+            precons[i] = lu(A + preconshifts[i] .* M)
+        end
     end
 
     mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons; kwargs...)
@@ -185,8 +187,7 @@ end
 function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3, kwargs...) where shiftT 
     # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
     # shiftT's can be real or complex
-    # julia's convention of putting 10^(log10(0)) = 0 makes this construction safe
-    
+    # in the case of nprecons = 1, we simple take an average value
     if shiftT <: Complex 
         # extract the machine epsilon for the given shift datatype 
         paramType = fieldtype(shiftT, 1)
@@ -196,6 +197,7 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3,
         ε = eps(shiftT)
     end
 
+    
     # shift real and imaginary parts (if nonempty) both by their minimum
     # values to move the ranges above zero, sample equidistantly log-spaced 
     # and then shift back into the the original range 
@@ -204,36 +206,46 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3,
     minshiftsRe = minimum(real.(shifts))
     maxshiftsRe = maximum(real.(shifts))
 
-    biasIm = max(ε, abs(minshiftsIm))
-    biasRe = max(ε, abs(minshiftsRe))
+    if nprecons > 1
+        biasIm = max(ε, abs(minshiftsIm))
+        biasRe = max(ε, abs(minshiftsRe))
 
-    if minshiftsIm == maxshiftsRe
-        preconshiftsIm = zeros(paramType, nprecons)
-    else
-        if minshiftsIm < 0 
-            preconshiftsIm = -2*abs(minshiftsIm) .+ (10.) .^ LinRange(log10(biasIm), log10(2*biasIm + maxshiftsIm), nprecons)
+        if minshiftsIm == maxshiftsRe
+            preconshiftsIm = zeros(paramType, nprecons)
         else
-            preconshiftsIm = (10.) .^ LinRange(log10(biasIm), log10(maxshiftsIm), nprecons)
+            if minshiftsIm < 0 
+                preconshiftsIm = -2*abs(minshiftsIm) .+ (10.) .^ LinRange(log10(biasIm), log10(2*biasIm + maxshiftsIm), nprecons)
+            else
+                preconshiftsIm = (10.) .^ LinRange(log10(biasIm), log10(maxshiftsIm), nprecons)
+            end
         end
-    end
 
-    if minshiftsRe == maxshiftsRe
-        preconshiftsRe = zeros(paramType, nprecons)
-    else
-        if minshiftsRe < 0
-            preconshiftsRe = -2*abs(minshiftsRe) .* (10.) .^ LinRange(log10(biasRe), log10(2*biasRe + maxshiftsRe), nprecons)
+        if minshiftsRe == maxshiftsRe
+            preconshiftsRe = zeros(paramType, nprecons)
         else
-            preconshiftsRe = (10.) .^ LinRange(log10(biasRe), log10(maxshiftsRe), nprecons) 
+            if minshiftsRe < 0
+                preconshiftsRe = -2*abs(minshiftsRe) .* (10.) .^ LinRange(log10(biasRe), log10(2*biasRe + maxshiftsRe), nprecons)
+            else
+                preconshiftsRe = (10.) .^ LinRange(log10(biasRe), log10(maxshiftsRe), nprecons) 
+            end
         end
-    end
 
 
-    #preconshiftsRe = (10.) .^ (LinRange(log10(minimum(real.(shifts))), log10(maximum(real.(shifts))), nprecons))
-    #preconshiftsIm = (10.) .^ (LinRange(log10(minimum(imag.(shifts))), log10(maximum(imag.(shifts))), nprecons))
-    if shiftT <: Complex
-        preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
+        #preconshiftsRe = (10.) .^ (LinRange(log10(minimum(real.(shifts))), log10(maximum(real.(shifts))), nprecons))
+        #preconshiftsIm = (10.) .^ (LinRange(log10(minimum(imag.(shifts))), log10(maximum(imag.(shifts))), nprecons))
+        if shiftT <: Complex
+            preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
+        else
+            preconshifts = preconshiftsRe
+        end
     else
-        preconshifts = preconshiftsRe
+        meanRe = mean(real.(shifts))
+        meanIm = mean(imag.(shifts))
+        if shiftT <: Complex 
+            preconshifts = [meanRe + 1.0im * meanIm]
+        else
+            preconshifts = [meanRe]
+        end
     end
     #@printf("mpgmressh_iterable preconshifts: %d\n", length(preconshifts))
     global preshifts = preconshifts
@@ -439,7 +451,8 @@ function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int)
  
         Hkσ = barnoldi.H[1:(k * barnoldi.nprecons + 1), ((k-1) * barnoldi.nprecons + 1):(k * barnoldi.nprecons)] * (UniformScaling(σ) - BlockDiagonals.getblock(barnoldi.T, BlockDiagonals.nblocks(barnoldi.T)))
         
-        Hkσ[end - 3,:] .+= 1.0
+        #Hkσ[end - 3,:] .+= 1.0
+        Hkσ[end - barnoldi.nprecons,:] .+= 1.0
 
         cols = size(Hkσ, 2)
         
