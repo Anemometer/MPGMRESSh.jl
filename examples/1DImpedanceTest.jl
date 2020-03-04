@@ -42,18 +42,10 @@ mutable struct Data  <: VoronoiFVM.AbstractData
     Data()=new()
 end
 
-function unsuit(x1,y1,x2,y2,x3,y3,area)
-    return false
-end
-
 
 function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
 
     L=1.0
-
-    VoronoiFVM.Triangulate.triunsuitable(unsuit)
-
-    display(VoronoiFVM.Triangulate.triunsuitable_func)
 
     # Create array which is refined close to 0
     h0=0.1/2.0^nref

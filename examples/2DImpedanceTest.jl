@@ -1,29 +1,3 @@
-# # 150: Impedance calculation
-# ([source code](SOURCE_URL))
-#
-#  Impedance calculation for 
-#
-#    C u_t - (D u_x)_x + Ru = 0   in (0,1)
-#      u(0,t)=1 + exp(iωt)
-#      u(1,t)=0
-#
-#    Measurement: I(t)= D u_x(1,t)
-#     
-#    Steady state: 
-#    - (D u0_x)_x + Ru0 = 0
-#    u0(0,t)=1 
-#    u0(1,t)=0 
-#
-#    Small signal ansatz for ω
-#
-#    u(x,t)= u0(x)+ ua(x) exp(iωt)
-#
-#    iωC ua - (D ua_x)_x + R u_a =0
-#      ua(0)=1
-#      ua(1)=0
-# 
-#        
-
 module Example161_Impedance2D
 
 using Printf
@@ -337,9 +311,9 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
     return steadystate, sys;
 end
 
-function test()
-    main(dense=true) ≈ 0.23106605162049176 &&  main(dense=false) ≈ 0.23106605162049176
-end
+#function test()
+#    main(dense=true) ≈ 0.23106605162049176 &&  main(dense=false) ≈ 0.23106605162049176
+#end
 
 
 end
