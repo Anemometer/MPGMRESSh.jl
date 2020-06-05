@@ -173,8 +173,10 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
         if isplots(Plotter) && animate
             #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label=LaTeXString("\$\\Re(u_a), \\; \\omega = "*string(ω))*"\$")
             #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label=LaTeXString("\$\\Im(u_a), \\; \\omega = "*string(ω))*"\$")
-            p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
-            p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
+            #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
+            #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
+            p1 = VoronoiFVM.ExtendableGrids.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
+            p2 = VoronoiFVM.ExtendableGrids.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
             Plotter.plot(p1,p2,layout = (2,1))
             Plotter.frame(anim)
         end
@@ -277,7 +279,7 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
 
     # ----------------------------------------------------------------
     
-    if isplots(Plotter)
+    if VoronoiFVM.isplots(Plotter)
         if animate
             Plotter.gif(anim, "/tmp/impedancetest.gif", fps=15)
         end

@@ -5,7 +5,7 @@ using VoronoiFVM
 using LaTeXStrings
 using SparseArrays
 using LinearAlgebra
-#using Triangulate
+using Triangulate
 
 include("../src/MPGMRESSh.jl")
 
@@ -25,7 +25,8 @@ end
 # no-flow conditions at boundary (hom. Neumann)
 function generate_refined_triangle_input(;L=1.0, h = 1.0, minangle = 20, maxarea = 0.01)
     #triin = Triangulate.TriangulateIO()
-    triin = VoronoiFVM.Triangulate.TriangulateIO()
+    #triin = VoronoiFVM.Triangulate.TriangulateIO()
+    triin = Triangulate.TriangulateIO()
     triin.pointlist = Matrix{Cdouble}([0.0 0.0 ; L 0.0 ; L h ; 0.0 h]')
     triin.segmentlist = Matrix{Cint}([1 2; 2 3; 3 4; 4 1]')
     triin.segmentmarkerlist=Vector{Int32}([3, 2, 3, 1])
@@ -43,26 +44,30 @@ function generate_refined_triangle_input(;L=1.0, h = 1.0, minangle = 20, maxarea
         (dist>1.0e-5 && area > 0.1*dist) || (area > maxarea)
     end
 
-    VoronoiFVM.Triangulate.triunsuitable(refine_unsuitable)
+    #VoronoiFVM.Triangulate.triunsuitable(refine_unsuitable)
+    Triangulate.triunsuitable(refine_unsuitable)
     
     return "paAuq$(angle)Q", triin;
 end
 
 
-function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense=false)
+function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf=false, animate = false)
 
     # Create 2D rectangular mesh refined close to the left boundary
     switches, triin = generate_refined_triangle_input(L=L, h=h, maxarea=maxarea)
 
     grid=VoronoiFVM.Grid(switches, triin)
 
-    VoronoiFVM.plot(Plotter, grid)
+    #VoronoiFVM.plot(Plotter, grid)
+    if(Plotter != nothing)
+        VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
+    end
     @printf("Press ENTER to continue...")
     readline();
 
     # Create and fill data 
     data=Data()
-    data.R=0
+    data.R=10
     data.D=1
     data.C=2
 
@@ -98,9 +103,6 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
     excited_bcval=1.0 # applied voltage
     excited_spec=1
 
-    #factory=VoronoiFVM.TestFunctionFactory(sys)
-    #measurement_testfunction=testfunction(factory,[1],[2])
-
     # define a set voltage of 1 on bc region 1 and 
     # 0 on region 2 (penalty-method-enforced Dirichlet)
     boundary_dirichlet!(sys,excited_spec,excited_bc,excited_bcval)
@@ -117,18 +119,25 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
         Plotter.plot_trisurf(tridata(grid)..., steadystate[1,:], cmap = "cool")
         # Spectral or cool
     else
-        VoronoiFVM.plot(Plotter, grid, steadystate[1,:])
+        #VoronoiFVM.plot(Plotter, grid, steadystate[1,:])
+        if(Plotter != nothing)
+            VoronoiFVM.ExtendableGrids.plot(grid, steadystate[1,:], Plotter = Plotter)
+        end
     end
 
     @printf("Press Enter to continue...")
     readline()
 
-    """ 
     # Create Impedance system from steady state
     excited_spec=1
     excited_bc=1
-    isys=VoronoiFVM.ImpedanceSystem(sys,steadystate,excited_spec, excited_bc)
+    isys=VoronoiFVM.ImpedanceSystem(sys,steadystate,excited_spec,excited_bc)
     UZ=unknowns(isys)
+
+    # define a test function for terminal current measurement 
+    # [see e.g. j-fu/ysz/txt/impedance-derivation]
+    factory=VoronoiFVM.TestFunctionFactory(sys)
+    measurement_testfunction=testfunction(factory,[1],[2])
 
     # define the measure functionals for measuring the terminal contact current
     function meas_stdy(meas,U)
@@ -150,27 +159,28 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
     # array to contain the excitation frequencies
     allomega=zeros(0)
 
-    # for calculated data
-    allI0=zeros(Complex{Float64},0)
+    # arrays containing the measured terminal current
     allIL=zeros(Complex{Float64},0)
 
-    # for exact data
-    allIx0=zeros(Complex{Float64},0)
+    # arrays containing the exactly calculated terminal current
     allIxL=zeros(Complex{Float64},0)
 
+    # frequency range [ω0, ω1] in geometric steps
     ω0=0.5
     ω1=1.0e4
     ω=ω0
 
-    testval=0.0
+    # time-steady impedance solution for every frequency ω
     UZ=unknowns(isys)
     noωs = Int64(ceil((log(2) + 4* log(10))/(log(6) - log(5))))
     allUZ = zeros(ComplexF64, (size(UZ)[2], noωs))
 
-    if isplots(Plotter) && animate
+    # control whether an animation of the time evolution
+    # of IL should be created and saved
+    if VoronoiFVM.isplots(Plotter) && animate
         anim = Plotter.Animation()
     end
-
+    
     # ----------------------------------------------------------------
 
     # solve the impedance problem directly for each shift by direct 
@@ -185,12 +195,14 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
         solve!(UZ,isys,ω)
         allUZ[:, i] = UZ[1,:]
 
-        # add real part of computed solution to animation frame 
-        if isplots(Plotter) && animate
+        # add real and imaginary parts of the computed solution to animation frame 
+        if VoronoiFVM.isplots(Plotter) && animate
             #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label=LaTeXString("\$\\Re(u_a), \\; \\omega = "*string(ω))*"\$")
             #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label=LaTeXString("\$\\Im(u_a), \\; \\omega = "*string(ω))*"\$")
-            p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
-            p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
+            #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
+            #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
+            p1 = VoronoiFVM.ExtendableGrids.plot(grid, real(UZ[1,:]), Plotter = Plotter, show=false, color=(1,0,0), label="Re(u_a)")
+            p2 = VoronoiFVM.ExtendableGrids.plot(grid, imag(UZ[1,:]), Plotter = Plotter, show=false, color=(0,0,1), label="Im(u_a)")
             Plotter.plot(p1,p2,layout = (2,1))
             Plotter.frame(anim)
         end
@@ -270,7 +282,7 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
     @printf("MPGMRESSh solution with preconditioning: \n")
     # the jacobi preconditioning allows us to iterate normally with respect to the 
     # relative residual (Convergence.standard)
-    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = 3, maxiter = 20,
+    UZω, it_mpgmresshprecon = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = 3, maxiter = 20,
                                 log = true, verbose = true, btol=1.0e-10,
                                 convergence = MPGMRESSh.standard)
 
@@ -282,18 +294,18 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
 
     # the rescaling by the jacobi preconditioner has taken care of the excessive absolute residuals
     # in our case, they are of course now identical to the relative residuals
-    absres = [norm(it_mpgmressh.b - (it_mpgmressh.barnoldi.A + shift .* it_mpgmressh.barnoldi.M) * it_mpgmressh.x[i]) for (i, shift) in enumerate(it_mpgmressh.barnoldi.allshifts)]
+    absres = [norm(it_mpgmresshprecon.b - (it_mpgmresshprecon.barnoldi.A + shift .* it_mpgmresshprecon.barnoldi.M) * it_mpgmresshprecon.x[i]) for (i, shift) in enumerate(it_mpgmresshprecon.barnoldi.allshifts)]
     @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
-    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
+    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmresshprecon.residual.β))
 
-    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
+    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmresshprecon.x[i])) for i=1:length(it_mpgmresshprecon.barnoldi.allshifts)])
     @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
     maxnormILs = maximum(abs.(allIL - allILMPGMRES))
     @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
 
     # ----------------------------------------------------------------
     
-    if isplots(Plotter)
+    if VoronoiFVM.isplots(Plotter)
         if animate
             Plotter.gif(anim, "/tmp/impedancetest.gif", fps=15)
         end
@@ -305,10 +317,9 @@ function main(;L=1.0, h=1.0, maxarea=0.01, Plotter=nothing, trisurf=false, dense
         #Plotter.gui(p)
         display(p)
     end
-    """
 
-    #return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh;
-    return steadystate, sys;
+    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprecon;
+    #return steadystate, sys;
 end
 
 #function test()
