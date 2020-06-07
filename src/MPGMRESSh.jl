@@ -9,8 +9,8 @@ module MPGMRESSh
 # MPGMRESSh core functionalities
 include("mpgmressh.jl")
 
-# Iterative methods with a fixed or flexible single preconditioners for later comparison
-#include("precongmres.jl")
-#include("fgmres.jl")
+# Flexible GMRES for shifted systems as specified in 
+# [Saibaba A. et al., A Flexible Krylov Solver for Shifted Systems...](https://arxiv.org/abs/1212.3660)
+include("fgmressh.jl")
 
 end

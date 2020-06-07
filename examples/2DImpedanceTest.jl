@@ -162,9 +162,6 @@ function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf
     # arrays containing the measured terminal current
     allIL=zeros(Complex{Float64},0)
 
-    # arrays containing the exactly calculated terminal current
-    allIxL=zeros(Complex{Float64},0)
-
     # frequency range [ω0, ω1] in geometric steps
     ω0=0.5
     ω1=1.0e4
@@ -214,13 +211,6 @@ function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf
         # record approximate solution
         push!(allomega, ω)
         push!(allIL,IL)
-
-        # record exact solution
-        z=sqrt(iω*data.C/data.D+data.R/data.D);
-        eplus=exp(z*L);
-        eminus=exp(-z*L);
-        IxL=2.0*data.D*z/(eminus-eplus);
-        push!(allIxL,IxL)
 
         # increase omega
         ω=ω*1.2
@@ -312,13 +302,12 @@ function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf
 
         p=Plotter.plot(grid=true)
         Plotter.plot!(p,real(allIL),imag(allIL),label="calc")
-        Plotter.plot!(p,real(allIxL),imag(allIxL),label="exact")
 
         #Plotter.gui(p)
         display(p)
     end
 
-    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprecon;
+    return sys, isys, allIL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprecon;
     #return steadystate, sys;
 end
 
