@@ -1,6 +1,6 @@
 using BlockDiagonals
 
-function fgmressh(b, A, M, shifts; kwargs...) where solT
+function fgmressh(b, A, M, shifts; kwargs...)
     T = typeof(one(eltype(b))/one(eltype(M)))
   
     x = [similar(b, T)]
@@ -22,12 +22,22 @@ function fgmressh!(x, b, A, M, shifts;
     convergence::Convergence = standard,
     explicit_residual::Bool = false,
     log::Bool = false,
-    verbose::Bool = false
+    verbose::Bool = false,
+    preconmethod = LUFac,
+    preconmaxiter = size(A,2),
+    preconrestart = min(20, size(A,2)),
+    preconreltol = btol
 )
-    # build an mpgmressh iterable with nprecons=1 search direction added 
+    # construct preconditioners
+    preconshifts = generate_preconshifts(shifts, preconvals)
+    precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
+    restart = preconrestart, reltol = preconreltol)
+
+    # build an mpgmressh iterable with nprecons=1 search directions added 
     # per Arnoldi expansion and a set of preconvals shift-and-invert preconditioners
-    global iterable = mpgmressh_iterable!(x, b, A, M, shifts; nprecons = 1,
-    npreconshifts = preconvals, btol = btol, atol = atol, maxiter = maxiter,
+    global iterable = mpgmressh_iterable!(x, b, A, M, shifts,
+    preconshifts, precons, 1;
+    btol = btol, atol = atol, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
 
     mk = floor(Int64, cycle_length/preconvals)

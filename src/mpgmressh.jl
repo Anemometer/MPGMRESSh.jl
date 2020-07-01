@@ -1,4 +1,5 @@
 import Base: iterate 
+import LinearAlgebra.ldiv!
 using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse, Statistics
 export mpgmressh, mpgmressh!, Convergence
 
@@ -102,6 +103,12 @@ The choice is between:
     absolute = 3
 end
 
+@enum PreconMethod begin
+    LUFac = 1
+    GMRES = 2
+    custom = 3
+end
+
 # matT for iterate room to work in or AbstractArray{T} and opT for A?
 mutable struct MPGMRESShIterable{solT, rhsT, matT, barnoldiT <: BlockArnoldiDecomp, residualT <: Residual, resT <: Real}
     x::Array{solT, 1} # array containing the solutions for every shift σ
@@ -123,6 +130,50 @@ mutable struct MPGMRESShIterable{solT, rhsT, matT, barnoldiT <: BlockArnoldiDeco
     precon_solves::Int # counter for preconditioner solves performed
 
     explicit_residual::Bool # flag signalling whether to compute the residual explicitly 
+end
+
+# generic shift and invert preconditioner data structure 
+# to provide standard preconditioner solution methods
+mutable struct SaIPreconditioner{shiftT, methoddataT}
+    # shift associated with preconditioner
+    shift::shiftT
+    
+    # preconditioner solution method to be applied
+    method::PreconMethod
+    # solution method metadata prepared in advance such as
+    # LU factorizations or GMRES iterables
+    methoddata::methoddataT
+end
+
+function ldiv!(y, pc::SaIPreconditioner, v)
+    if pc.method == LUFac 
+        # simply call the ldiv method for LU factorizations
+        ldiv!(y, pc.methoddata, v)
+    end
+
+    if pc.method == GMRES 
+        # initialize with y
+        copyto!(pc.methoddata.x, y)
+        # copy the right-hand side into the iterator
+        copyto!(pc.methoddata.b, v)
+        # initiate first search direction and residual data
+        pc.methoddata.residual.current = IterativeSolvers.init!(pc.methoddata.arnoldi, pc.methoddata.x, pc.methoddata.b, Identity(), pc.methoddata.Ax)
+        IterativeSolvers.init_residual!(pc.methoddata.residual, pc.methoddata.residual.current)
+        # perform the iteration
+        println("\t precon solve: ")
+        j = 1
+        for (it,res) in enumerate(pc.methoddata)
+            #println("\t it, res: ", it, ", ", res)
+            j = j+1
+        end
+        println("\t took ",j," iterations")
+        # copy the solution to y
+        copyto!(y, pc.methoddata.x)
+    end
+
+    if pc.method == custom
+        error("custom preconditioning solve requires custom ldiv! method!")
+    end
 end
 
 # initialize the iterable MPGMRESSh object 
@@ -177,33 +228,57 @@ function init!(barnoldi::BlockArnoldiDecomp{T}, b, residual::Residual) where T
     return β
 end
 
-# in case A, M and the preconditioning shifts are given explicitly
-# for FGMRESSh support: provide the option to set npreconshifts explicitly 
-# which is the number of preconditioners used in the BlockArnoldi expansion
-function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}, preconshifts::Array{shiftT, 1}, nprecons::Int64; kwargs...) where shiftT
-    LU = lu(A + preconshifts[1] .* M)
-    #nprecons = length(preconshifts)
+# generate preconditioners given A,M and preconditioning shifts to provide 
+# preconitioning solves of the desired type
+function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::PreconMethod; 
+    maxiter = size(A,2),
+    restart = min(20, size(A,2)),
+    reltol = sqrt(eps(real(eltype(A))))) where shiftT
+    
     npreconshifts = length(preconshifts)
-    #precons = Array{typeof(LU)}(undef, nprecons)
-    precons = Array{typeof(LU)}(undef, npreconshifts)
-    precons[1] = LU
+    precons = Array{SaIPreconditioner}(undef, npreconshifts)
 
-    #if nprecons >= 2
-    #    for i = 2:nprecons
-    #        precons[i] = lu(A + preconshifts[i] .* M)
-    #    end
-    #end
-    if npreconshifts >= 2
-        for i = 2:npreconshifts
-            precons[i] = lu(A + preconshifts[i] .* M)
+    if method == LUFac
+        LU = lu(A + preconshifts[1] .* M)
+        precon = SaIPreconditioner(preconshifts[1], LUFac, LU)
+        precons[1] = precon
+        
+        if npreconshifts >= 2
+            for i = 2:npreconshifts
+                LU = lu(A + preconshifts[i] * M)
+                precons[i] = SaIPreconditioner(preconshifts[i], LUFac, LU)
+            end
         end
+
+        return precons
+    end
+    
+    if method == GMRES
+        # assume preconditioners map from the eltype of (A+shift.*M) to the same type
+        #T = typeof(one(eltype(A)) + one(eltype(preconshifts)) * one(eltype(M)))
+        T = eltype(preconshifts[1] * M)
+        m = size(M, 2)
+        x = zeros(T, m)
+        b = ones(T, m)
+        for (i,v) in enumerate(preconshifts)
+            it = IterativeSolvers.gmres_iterable!(x, A + preconshifts[i] * M, b, maxiter=maxiter, restart=restart)
+            it.reltol = reltol
+            precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it)
+        end
+
+        return precons
     end
 
-    mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons, nprecons; kwargs...)
+    if method == custom 
+        for (i,v) in enumerate(preconshifts)
+            precons[i] = SaIPreconditioner(preconshifts[i], custom, nothing)
+        end
+        return precons
+    end
 end
 
-# in case A, M are given explicitly, but not the preconditioning shifts
-function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3, npreconshifts = nprecons, kwargs...) where shiftT 
+# generate the preconditioning shifts equidistantly log-spaced in the set of shifts
+function generate_preconshifts(shifts::Array{shiftT, 1}, npreconshifts) where shiftT 
     # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
     # shiftT's can be real or complex
     # in the case of nprecons = 1, we simply take an average value
@@ -266,11 +341,8 @@ function mpgmressh_iterable!(x, b, A, M, shifts::Array{shiftT, 1}; nprecons = 3,
             preconshifts = [meanRe]
         end
     end
-    #@printf("mpgmressh_iterable preconshifts: %d\n", length(preconshifts))
-    preshifts = preconshifts
 
-    #preconshifts = 1im .* collect(LinRange(minimum(imag.(shifts)), maximum(imag.(shifts)), nprecons))
-    mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, nprecons; kwargs...)
+    return preconshifts
 end
 
 start(::MPGMRESShIterable) = 0
@@ -312,7 +384,11 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     
     global hsigbefore = gsh.barnoldi.H
     # execute the block orthogonalization routine
-    gsh.Wspace = gsh.barnoldi.M * gsh.Wspace
+    for col in eachcol(gsh.Wspace)
+        # iterate through the columns of Wspace to keep the 
+        # iterative method matrix free
+        col .= gsh.barnoldi.M * col
+    end    
     gsh.mv_products += BlockArnoldiStep!(gsh.Wspace, gsh.barnoldi.V, view(gsh.barnoldi.H, :, (1 + (gsh.k - 1) * gsh.barnoldi.nprecons):(gsh.k * gsh.barnoldi.nprecons)))
 
     #if gsh.explicit_residual
@@ -416,6 +492,11 @@ function BlockArnoldiStep!(W::Matrix{T}, V::Array{Matrix{T}, 1}, H::StridedVecOr
         cumulsize += bsize
     end
     fact = qr(W) # thin qr-factorization without pivoting or rank reveal for now 
+    fact2 = qr(W,Val(true))
+    if rank(fact2.R)< size(fact2.R,2)
+        @printf("Rank deficiency! Permutation:")
+        display(fact2.p)
+    end
     Q = Matrix(fact.Q)
     Q = Q[:, 1:size(W, 2)]
 
@@ -546,9 +627,8 @@ function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int, bto
     #return hh    
 end
 
-function mpgmressh(b, A, M, shifts; kwargs...) where solT
-    # until I can think of something better, use a divtype for M
-    # this should probably be replaced by some generic operator type 
+function mpgmressh(b, A, M, shifts; kwargs...)
+    # use the appropriate divtype for M
     T = typeof(one(eltype(b))/(one(eltype(shifts)) * one(eltype(M))))
 
     # !TODO implement sanity checks for proper 
@@ -577,7 +657,6 @@ end
 
 # !TODO: adjust up mpgmres! calls to the different constructors for 
 # the iterable object
-# !TODO: provide option to supply (A+shift.*M) as operators
 function mpgmressh!(x, b, A, M, shifts;
     nprecons = 3,
     btol = sqrt(eps(real(eltype(b)))),
@@ -586,14 +665,25 @@ function mpgmressh!(x, b, A, M, shifts;
     convergence::Convergence = standard,
     explicit_residual::Bool = false,
     log::Bool = false,
-    verbose::Bool = false
+    verbose::Bool = false,
+    preconmethod = LUFac,
+    preconmaxiter = size(A,2),
+    preconrestart = min(20, size(A,2)),
+    preconreltol = btol 
 )
     # !TODO: create IterativeSolvers.history objects for tracking convergence history
 
-    global iterable = mpgmressh_iterable!(x, b, A, M, shifts; nprecons = nprecons,
-    npreconshifts = nprecons, btol = btol, atol = atol, maxiter = maxiter,
+    # construct preconditioners
+    preconshifts = generate_preconshifts(shifts, nprecons)
+    precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
+    restart = preconrestart, reltol = preconreltol)
+    
+    # instantiate iterable
+    global iterable = mpgmressh_iterable!(x, b, A, M, shifts, preconshifts,
+    precons, nprecons; btol = btol, atol = atol, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
 
+    # perform iteration
     @time for (it, res) in enumerate(iterable)
         verbose && @printf("%3d\t%1.2e\n", 1 + mod(it - 1, maxiter), maximum(res))
     end

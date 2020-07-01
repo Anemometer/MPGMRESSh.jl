@@ -51,16 +51,36 @@ function generate_refined_triangle_input(;L=1.0, h = 1.0, minangle = 20, maxarea
 end
 
 
-function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf=false, animate = false)
+function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecons=3, preconmethod = MPGMRESSh.LUFac, maxiter=20, Plotter=nothing, trisurf=false, animate = false)
 
-    # Create 2D rectangular mesh refined close to the left boundary
-    switches, triin = generate_refined_triangle_input(L=L, h=h, maxarea=maxarea)
+    if regular 
+        # create regular grid with squares as cells
+        X = collect(0.0:sqrt(maxarea):L)
+        Y = collect(0.0:sqrt(maxarea):h)
+        grid = VoronoiFVM.Grid(X,Y)
+        # set correct region numbers: 1 for the west contact, 2 for the east contact 
+        # and 3 for the north and south boundaries
 
-    grid=VoronoiFVM.Grid(switches, triin)
+        # south
+        VoronoiFVM.ExtendableGrids.bfacemask!(grid, [0.0,0.0],[1.0,0.0],3)
 
+        # north
+        VoronoiFVM.ExtendableGrids.bfacemask!(grid, [0.0,1.0],[1.0,1.0],3)
+
+        # east
+        VoronoiFVM.ExtendableGrids.bfacemask!(grid, [1.0,0.0],[1.0,1.0],2)
+
+        # west
+        VoronoiFVM.ExtendableGrids.bfacemask!(grid, [0.0,0.0],[0.0,1.0],1)
+    else
+        # Create 2D rectangular mesh refined close to the left boundary
+        switches, triin = generate_refined_triangle_input(L=L, h=h, maxarea=maxarea)
+
+        grid=VoronoiFVM.Grid(switches, triin)
+    end
     #VoronoiFVM.plot(Plotter, grid)
     if(Plotter != nothing)
-        VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
+        p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
     end
     @printf("Press ENTER to continue...")
     readline();
@@ -247,9 +267,11 @@ function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf
     #
     # however, the implemented Ayachour residual update helps cancel out this problem
     # since it scales with the penalty parameter in its numerator and denominator equally
-    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = 3, maxiter = 20,
+    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.absolute)
+                                convergence = MPGMRESSh.absolute, preconmethod = preconmethod,
+                                preconreltol = 1.0e-40)
+    # preconditioner solution method: LU factorization
 
     # now calculate the associated measurements for the unpreconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))
@@ -272,9 +294,10 @@ function main(;L=1.0, h=1.0, maxarea=0.01, dense=false, Plotter=nothing, trisurf
     @printf("MPGMRESSh solution with preconditioning: \n")
     # the jacobi preconditioning allows us to iterate normally with respect to the 
     # relative residual (Convergence.standard)
-    UZω, it_mpgmresshprecon = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = 3, maxiter = 20,
+    UZω, it_mpgmresshprecon = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.standard)
+                                convergence = MPGMRESSh.standard, preconmethod = preconmethod)
+    # preconditioner solution method: LU factorization
 
     # now calculate the associated measurements for the jacobi-preconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))

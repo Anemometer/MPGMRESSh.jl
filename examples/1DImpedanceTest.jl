@@ -43,7 +43,7 @@ mutable struct Data  <: VoronoiFVM.AbstractData
 end
 
 
-function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
+function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, Plotter=nothing, verbose=false, dense=false, animate=false)
 
     L=1.0
 
@@ -231,9 +231,10 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
     #
     # however, the implemented Ayachour residual update helps cancel out this problem
     # since it scales with the penalty parameter in its numerator and denominator equally
-    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = 3, maxiter = 20,
+    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.absolute)
+                                convergence = MPGMRESSh.absolute, preconmethod = preconmethod,
+                                preconreltol = 1.0e-40)
 
     # now calculate the associated measurements for the unpreconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))
@@ -256,9 +257,11 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
     @printf("MPGMRESSh solution with preconditioning: \n")
     # the jacobi preconditioning allows us to iterate normally with respect to the 
     # relative residual (Convergence.standard)
-    UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = 3, maxiter = 20,
+    UZω, it_mpgmresshprec = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.standard)
+                                convergence = MPGMRESSh.standard, preconmethod = preconmethod,
+                                preconreltol = 1.0e-16,
+                                preconmaxiter = 1000)
 
     # now calculate the associated measurements for the jacobi-preconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))
@@ -268,11 +271,11 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
 
     # the rescaling by the jacobi preconditioner has taken care of the excessive absolute residuals
     # in our case, they are of course now identical to the relative residuals
-    absres = [norm(it_mpgmressh.b - (it_mpgmressh.barnoldi.A + shift .* it_mpgmressh.barnoldi.M) * it_mpgmressh.x[i]) for (i, shift) in enumerate(it_mpgmressh.barnoldi.allshifts)]
+    absres = [norm(it_mpgmresshprec.b - (it_mpgmresshprec.barnoldi.A + shift .* it_mpgmresshprec.barnoldi.M) * it_mpgmresshprec.x[i]) for (i, shift) in enumerate(it_mpgmresshprec.barnoldi.allshifts)]
     @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
-    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
+    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmresshprec.residual.β))
 
-    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
+    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmresshprec.x[i])) for i=1:length(it_mpgmresshprec.barnoldi.allshifts)])
     @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
     maxnormILs = maximum(abs.(allIL - allILMPGMRES))
     @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
@@ -292,7 +295,7 @@ function main(;nref=0,Plotter=nothing,verbose=false, dense=false, animate=false)
         display(p)
     end
 
-    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh;
+    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprec;
 end
 
 function test()
