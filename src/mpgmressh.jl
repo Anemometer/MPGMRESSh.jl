@@ -160,13 +160,13 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         pc.methoddata.residual.current = IterativeSolvers.init!(pc.methoddata.arnoldi, pc.methoddata.x, pc.methoddata.b, Identity(), pc.methoddata.Ax)
         IterativeSolvers.init_residual!(pc.methoddata.residual, pc.methoddata.residual.current)
         # perform the iteration
-        println("\t precon solve: ")
-        j = 1
+        #println("\t precon solve: ")
+        #j = 1
         for (it,res) in enumerate(pc.methoddata)
-            #println("\t it, res: ", it, ", ", res)
-            j = j+1
+        #    println("\t it, res: ", it, ", ", res)
+        #    j = j+1
         end
-        println("\t took ",j," iterations")
+        #println("\t took ",j," iterations")
         # copy the solution to y
         copyto!(y, pc.methoddata.x)
     end
@@ -492,11 +492,11 @@ function BlockArnoldiStep!(W::Matrix{T}, V::Array{Matrix{T}, 1}, H::StridedVecOr
         cumulsize += bsize
     end
     fact = qr(W) # thin qr-factorization without pivoting or rank reveal for now 
-    fact2 = qr(W,Val(true))
-    if rank(fact2.R)< size(fact2.R,2)
-        @printf("Rank deficiency! Permutation:")
-        display(fact2.p)
-    end
+    #fact2 = qr(W,Val(true))
+    #if rank(fact2.R)< size(fact2.R,2)
+    #    @printf("Rank deficiency! Permutation:")
+    #    display(fact2.p)
+    #end
     Q = Matrix(fact.Q)
     Q = Q[:, 1:size(W, 2)]
 
