@@ -1,7 +1,7 @@
 import Base: iterate 
 import LinearAlgebra.ldiv!
 using Printf, BlockDiagonals, LinearAlgebra, IterativeSolvers, SuiteSparse, Statistics
-export mpgmressh, mpgmressh!, Convergence
+export mpgmressh, mpgmressh!, Convergence, PreconMethod
 
 # This code draws heavily from the style already adopted for gmres.jl of IterativeSolvers.jl.
 
@@ -106,7 +106,8 @@ end
 @enum PreconMethod begin
     LUFac = 1
     GMRES = 2
-    custom = 3
+    GaussSeidel = 3
+    custom = 4
 end
 
 # matT for iterate room to work in or AbstractArray{T} and opT for A?
@@ -134,7 +135,7 @@ end
 
 # generic shift and invert preconditioner data structure 
 # to provide standard preconditioner solution methods
-mutable struct SaIPreconditioner{shiftT, methoddataT}
+mutable struct SaIPreconditioner{shiftT, methoddataT, resT}
     # shift associated with preconditioner
     shift::shiftT
     
@@ -143,6 +144,12 @@ mutable struct SaIPreconditioner{shiftT, methoddataT}
     # solution method metadata prepared in advance such as
     # LU factorizations or GMRES iterables
     methoddata::methoddataT
+    tol::resT
+end
+
+function SaIPreconditioner(shift::shiftT, method::PreconMethod, methoddata::methoddataT; 
+    tol = sqrt(eps(real(eltype(shift))))) where {shiftT, methoddataT}
+    return SaIPreconditioner(shift, method, methoddata, tol)
 end
 
 function ldiv!(y, pc::SaIPreconditioner, v)
@@ -168,6 +175,23 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         end
         #println("\t took ",j," iterations")
         # copy the solution to y
+        copyto!(y, pc.methoddata.x)
+    end
+
+    if pc.method == GaussSeidel
+        copyto!(pc.methoddata.x, y)
+        copyto!(pc.methoddata.b, v)
+        
+        #println("\t precon solve:")
+        #j = 1
+        for (i, nothing) in enumerate(pc.methoddata)
+            if norm(pc.methoddata.b - pc.methoddata.A * pc.methoddata.x) < pc.tol * norm(pc.methoddata.b)
+                break
+            end
+            #j = j+1
+        end
+        #println("\t took ", j, " iterations")
+
         copyto!(y, pc.methoddata.x)
     end
 
@@ -263,7 +287,20 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         for (i,v) in enumerate(preconshifts)
             it = IterativeSolvers.gmres_iterable!(x, A + preconshifts[i] * M, b, maxiter=maxiter, restart=restart)
             it.reltol = reltol
-            precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it)
+            precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it, tol = reltol)
+        end
+
+        return precons
+    end
+
+    if method == GaussSeidel
+        T = eltype(preconshifts[1] * M)
+        m = size(M, 2)
+        x = zeros(T, m)
+        b = ones(T, m)
+        for (i,v) in enumerate(preconshifts)
+            it = IterativeSolvers.DenseGaussSeidelIterable(A + preconshifts[i] * M, x, b, maxiter)
+            precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = reltol)
         end
 
         return precons
