@@ -51,7 +51,7 @@ function generate_refined_triangle_input(;L=1.0, h = 1.0, minangle = 20, maxarea
 end
 
 
-function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecons=3, preconmethod = MPGMRESSh.LUFac, maxiter=20, Plotter=nothing, trisurf=false, animate = false)
+function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecons=3, preconmethod = MPGMRESSh.LUFac, maxiter=20, preconreltol = 1.0e-10, Plotter=nothing, trisurf=false, animate = false)
 
     if regular 
         # create regular grid with squares as cells
@@ -270,7 +270,7 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
                                 convergence = MPGMRESSh.absolute, preconmethod = preconmethod,
-                                preconreltol = 1.0e-40)
+                                preconreltol = preconreltol)
     # preconditioner solution method: LU factorization
 
     # now calculate the associated measurements for the unpreconditioned system
@@ -296,7 +296,8 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     # relative residual (Convergence.standard)
     UZω, it_mpgmresshprecon = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.standard, preconmethod = preconmethod)
+                                convergence = MPGMRESSh.standard, preconmethod = preconmethod,
+                                preconreltol = preconreltol)
     # preconditioner solution method: LU factorization
 
     # now calculate the associated measurements for the jacobi-preconditioned system

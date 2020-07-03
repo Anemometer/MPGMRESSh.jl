@@ -107,7 +107,8 @@ end
     LUFac = 1
     GMRES = 2
     GaussSeidel = 3
-    custom = 4
+    BiCGStab = 4
+    custom = 5
 end
 
 # matT for iterate room to work in or AbstractArray{T} and opT for A?
@@ -192,6 +193,50 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         end
         #println("\t took ", j, " iterations")
 
+        copyto!(y, pc.methoddata.x)
+    end
+
+    if pc.method == BiCGStab
+        # the setup of all internal structures is done in 
+        # the iterator constructor
+        #pc.methoddata = IterativeSolvers.bicgstabl_iterator!(y, pc.methoddata.A, v, 2,
+        #max_mv_products = pc.methoddata.max_mv_products, tol = pc.methoddata.reltol)
+        
+        T = eltype(pc.methoddata.x)
+        n = size(pc.methoddata.A, 1)
+        l = pc.methoddata.l
+
+        copyto!(pc.methoddata.x, y)
+
+        pc.methoddata.mv_products = 0
+        pc.methoddata.r_shadow = rand(T, n)
+        pc.methoddata.rs = Matrix{T}(undef, n, l + 1)
+        pc.methoddata.us = zeros(T, n, l+1)
+
+        #pc.methoddata.rs[:,1] .= v .- (pc.methoddata.A * pc.methoddata.x)
+        temp = view(pc.methoddata.rs, : , 1)
+        mul!(temp, pc.methoddata.A, pc.methoddata.x)
+        temp .= v .- temp
+        pc.methoddata.mv_products += 1
+
+        pc.methoddata.residual = norm(temp)
+
+        pc.methoddata.γ = zeros(T, l)
+        pc.methoddata.ω = one(T)
+        pc.methoddata.σ = one(T)
+        pc.methoddata.M = zeros(T, l+1, l+1)
+
+        pc.methoddata.reltol = pc.tol 
+        
+        #println(" \t precon solve:")
+        #j = 1
+        for (it, nothing) in enumerate(pc.methoddata)
+            #j = j+1
+            #println("\t res: ", pc.methoddata.residual)
+        end
+
+        #println(" \t took ", j, " iterations")
+        
         copyto!(y, pc.methoddata.x)
     end
 
@@ -301,6 +346,22 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         for (i,v) in enumerate(preconshifts)
             it = IterativeSolvers.DenseGaussSeidelIterable(A + preconshifts[i] * M, x, b, maxiter)
             precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = reltol)
+        end
+
+        return precons
+    end
+
+    if method == BiCGStab
+        T = eltype(preconshifts[1] * M)
+        m = size(M, 2)
+        x = zeros(T, m)
+        b = ones(T, m)
+        for (i,v) in enumerate(preconshifts)
+            # note: maxiter here takes the role of maximum matrix-vector products performed 
+            # in the bicgstab algorithm as specified in IterativeSolvers
+            # default: 1 for standard BiCGStab
+            it = IterativeSolvers.bicgstabl_iterator!(x, A + preconshifts[i] * M, b, 1, max_mv_products=maxiter, tol=reltol)
+            precons[i] = SaIPreconditioner(preconshifts[i], BiCGStab, it, tol = reltol)
         end
 
         return precons
