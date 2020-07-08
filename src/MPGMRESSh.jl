@@ -6,6 +6,9 @@ See [Bakhos T. et al., Multipreconditioned GMRES for Shifted Systems](https://ar
 """
 module MPGMRESSh
 
+# Shift-and-invert preconditioner functionalities
+include("preconditioner.jl")
+
 # MPGMRESSh core functionalities
 include("mpgmressh.jl")
 

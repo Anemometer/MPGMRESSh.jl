@@ -26,12 +26,13 @@ function fgmressh!(x, b, A, M, shifts;
     preconmethod = LUFac,
     preconmaxiter = size(A,2),
     preconrestart = min(20, size(A,2)),
+    preconAMG = false,
     preconreltol = btol
 )
     # construct preconditioners
     preconshifts = generate_preconshifts(shifts, preconvals)
     precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
-    restart = preconrestart, reltol = preconreltol)
+    restart = preconrestart, AMG = preconAMG, reltol = preconreltol)
 
     # build an mpgmressh iterable with nprecons=1 search directions added 
     # per Arnoldi expansion and a set of preconvals shift-and-invert preconditioners

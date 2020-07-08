@@ -43,7 +43,7 @@ mutable struct Data  <: VoronoiFVM.AbstractData
 end
 
 
-function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, Plotter=nothing, verbose=false, dense=false, animate=false)
+function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, preconreltol = 1.0e-10, Plotter=nothing, verbose=false, dense=false, animate=false)
 
     L=1.0
 
@@ -234,7 +234,7 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
     UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
                                 convergence = MPGMRESSh.absolute, preconmethod = preconmethod,
-                                preconreltol = 1.0e-40)
+                                preconreltol = preconreltol)
 
     # now calculate the associated measurements for the unpreconditioned system
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))

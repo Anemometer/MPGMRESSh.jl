@@ -8,6 +8,7 @@ using LinearAlgebra
 using Triangulate
 
 include("../src/MPGMRESSh.jl")
+include("../src/preconditioner.jl")
 
 # Structure containing  userdata information
 mutable struct Data  <: VoronoiFVM.AbstractData
