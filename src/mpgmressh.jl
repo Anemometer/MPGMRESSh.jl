@@ -588,7 +588,8 @@ function mpgmressh!(x, b, A, M, shifts;
     convergence = convergence, explicit_residual = explicit_residual)
 
     # perform iteration
-    @time for (it, res) in enumerate(iterable)
+    #@time
+    for (it, res) in enumerate(iterable)
         verbose && @printf("%3d\t%1.2e\n", 1 + mod(it - 1, maxiter), maximum(res))
     end
 

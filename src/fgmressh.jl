@@ -47,12 +47,11 @@ function fgmressh!(x, b, A, M, shifts;
     iterable.barnoldi.currentprecons[1] = precon_index
     BlockDiagonals.getblock(iterable.barnoldi.T, iterable.k)[1] = iterable.barnoldi.preconshifts[precon_index]
 
-    @time for (it, res) in enumerate(iterable)
+    # @time
+    for (it, res) in enumerate(iterable)
         # if one preconditioning cycle is completed, swap the precon index
-        #if mod(it, mk) == 0
-        @printf("precon index: %d\n",precon_index)
+        #@printf("precon index: %d\n",precon_index)
         if mod(iterable.k, mk) == 0
-            #if mod(it, cycle_length) == 0 
             if mod(iterable.k, cycle_length) == 0 
                 precon_index = 0
             end
@@ -61,8 +60,6 @@ function fgmressh!(x, b, A, M, shifts;
         end        
         # set the diagonal element of the auxiliary matrix T to the currently 
         # applied preconditioning shift value
-        #iterable.barnoldi.T[it][1] = iterable.barnoldi.preconshifts[precon_index]
-        #BlockDiagonals.getblock(iterable.barnoldi.T, it)[1] = iterable.barnoldi.preconshifts[precon_index]
         BlockDiagonals.getblock(iterable.barnoldi.T, iterable.k)[1] = iterable.barnoldi.preconshifts[precon_index]
         verbose && @printf("%3d\t%1.2e\n", 1 + mod(it - 1, maxiter), maximum(res))
     end

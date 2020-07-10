@@ -1,5 +1,5 @@
 import LinearAlgebra.ldiv!
-using IterativeSolvers, LinearAlgebra
+using IterativeSolvers, LinearAlgebra, SparseArrays
 # name clash with GaussSeidel in PreconMethod: use needed methods directly
 using AlgebraicMultigrid: ruge_stuben, aspreconditioner
 
@@ -208,6 +208,7 @@ function ldiv!(y, pc::SaIPreconditioner, v)
             if norm(pc.methoddata.b - pc.methoddata.A * pc.methoddata.x) < pc.tol * norm(pc.methoddata.b)
                 break
             end
+            #println("\t res: ", norm(pc.methoddata.b - pc.methoddata.A * pc.methoddata.x))
             #j = j+1
         end
         #println("\t took ", j, " iterations")
