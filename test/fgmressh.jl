@@ -16,6 +16,7 @@ using AlgebraicMultigrid: poisson
 
 @testset "FGMRESSh" begin
 
+Random.seed!(1234321)
 n = 100
 
 # test FGMRESSh with 3 preconditioners

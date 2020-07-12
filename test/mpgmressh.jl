@@ -1,8 +1,8 @@
 using SparseArrays
 using LinearAlgebra
 using Printf
-using DelimitedFiles
 using LinearMaps
+using Random
 
 using Test
 using AlgebraicMultigrid: poisson
@@ -16,6 +16,7 @@ using AlgebraicMultigrid: poisson
 
 @testset "MPGMRESSh" begin
 
+Random.seed!(1234321)
 n = 100
 
 # test MPGMRESSh with 1 and 3 preconditioners
@@ -170,7 +171,6 @@ println("Running MPGMRESSh Arnoldi decomposition test for sparse matrices...")
     preconrestart=size(A,2));
 
     # expected max error: ~5e-14
-    @test maximum(test_Arnoldi_relationship(it)) < 1.0e-12
+    @test maximum(test_Arnoldi_relationship(it)) < 1.0e-13
 end;
-
 end;

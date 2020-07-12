@@ -43,17 +43,61 @@ mutable struct Data  <: VoronoiFVM.AbstractData
 end
 
 
-function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, preconreltol = 1.0e-10, Plotter=nothing, verbose=false, dense=false, animate=false)
+function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, preconreltol = 1.0e-10, regular = false, Plotter=nothing, verbose=false, dense=false, animate=false)
 
     L=1.0
 
-    # Create array which is refined close to 0
-    h0=0.1/2.0^nref
-    h1=0.5/2.0^nref
-    X=VoronoiFVM.geomspace(0.0,L,h0,h1)
+    if !regular
+        # Create array which is refined close to 0
+        h0=0.1/2.0^nref
+        h1=0.5/2.0^nref
+        X=VoronoiFVM.geomspace(0.0,L,h0,h1)
+    else
+        X=collect(range(0.,stop=L,length=nref))
+    end
 
     # Create discretitzation grid
     grid=VoronoiFVM.Grid(X)
+
+    if Plotter != nothing
+        # https://github.com/j-fu/ExtendableGrids.jl/issues/1
+        #p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter, show = true)
+        
+        p = Plotter.plot()
+        
+        cellregions=grid[VoronoiFVM.CellRegions]
+        cellnodes=grid[VoronoiFVM.CellNodes]
+        coord=grid[VoronoiFVM.Coordinates]
+        ncellregions=grid[VoronoiFVM.NumCellRegions]
+        bfacenodes=grid[VoronoiFVM.BFaceNodes]
+        bfaceregions=grid[VoronoiFVM.BFaceRegions]
+        nbfaceregions=grid[VoronoiFVM.NumBFaceRegions]
+
+        xmin=minimum(coord)
+        xmax=maximum(coord)
+        h=(xmax-xmin)/20.0
+        
+        for icell=1:VoronoiFVM.num_cells(grid)
+            rgb=VoronoiFVM.ExtendableGrids.frgb(Plotter,cellregions[icell],ncellregions)
+            x1 = coord[cellnodes[1,icell]]
+            x2 = coord[cellnodes[2,icell]]
+            Plotter.plot!(p,[x1,x1],[-h,h],linewidth=0.5,color=:black,label="")
+            Plotter.plot!(p,[x2,x2],[-h,h],linewidth=0.5,color=:black,label="")
+            Plotter.plot!(p,[x1,x2],[0,0],linewidth=3.0,color=rgb,label="")
+        end
+        
+        for ibface=1:VoronoiFVM.num_bfaces(grid)
+            if bfaceregions[ibface]>0
+                rgb=VoronoiFVM.ExtendableGrids.frgb(Plotter,bfaceregions[ibface],nbfaceregions)
+                x1 = coord[bfacenodes[1,ibface]]
+                Plotter.plot!(p,[x1,x1],[-2*h,2*h],linewidth=3.0,color=rgb,label="")
+            end
+        end
+
+        Plotter.svg(p, "grid.svg")     
+        display(p)
+        
+    end
 
     # Create and fill data 
     data=Data()
@@ -108,6 +152,12 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
     steadystate=unknowns(sys)
     inival.=0.0
     solve!(steadystate,inival,sys)
+
+    if Plotter!=nothing
+        p = VoronoiFVM.ExtendableGrids.plot(grid,steadystate[1,:], Plotter=Plotter)
+        display(p)
+        Plotter.svg(p,"steadystate.svg")
+    end
 
     # define the measure functionals for measuring the terminal contact current
     function meas_stdy(meas,U)
@@ -282,17 +332,21 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
 
     # ----------------------------------------------------------------
     
-    if VoronoiFVM.isplots(Plotter)
+    if isplots(Plotter)
         if animate
             Plotter.gif(anim, "/tmp/impedancetest.gif", fps=15)
         end
 
         p=Plotter.plot(grid=true)
-        Plotter.plot!(p,real(allIL),imag(allIL),label="calc")
-        Plotter.plot!(p,real(allIxL),imag(allIxL),label="exact")
+        #Plotter.plot!(p,real(allIL),imag(allIL),label="approximated")
+        Plotter.plot!(p,real(allIL),imag(allIL),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
+        #Plotter.plot!(p,real(allIxL),imag(allIxL),label="exact")
+        Plotter.plot!(p,real(allIxL),imag(allIxL),label=LaTeXString("exact (\$I_{\\alpha}^{a}\$)"))
 
         #Plotter.gui(p)
         display(p)
+
+        Plotter.svg(p,"impedance.svg")
     end
 
     return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprec;
