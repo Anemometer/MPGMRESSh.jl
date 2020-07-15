@@ -29,6 +29,21 @@ function fgmressh!(x, b, A, M, shifts;
     preconAMG = false,
     preconreltol = btol
 )
+    if log
+        history = IterativeSolvers.ConvergenceHistory(partial = !log)
+        history[:btol] = btol
+        history[:explicit_residual] = explicit_residual
+        # store precon solve info
+        history[:preconmethod] = preconmethod
+        history[:preconmaxiter] = preconmaxiter
+        history[:preconrestart] = preconrestart
+        history[:preconAMG] = preconAMG
+        history[:preconreltol] = preconreltol
+        # reserve residual info 
+        IterativeSolvers.reserve!(history, :resmat, maxiter, length(shifts))
+        
+        setup_time = time_ns()
+    end
     # construct preconditioners
     preconshifts = generate_preconshifts(shifts, preconvals)
     precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
@@ -47,7 +62,21 @@ function fgmressh!(x, b, A, M, shifts;
     iterable.barnoldi.currentprecons[1] = precon_index
     BlockDiagonals.getblock(iterable.barnoldi.T, iterable.k)[1] = iterable.barnoldi.preconshifts[precon_index]
 
-    # @time
+    if log 
+        setup_time = time_ns() - setup_time
+        history[:setup_time] = setup_time
+
+        iteration_time = time_ns()
+
+        # set up convergence flag array
+        IterativeSolvers.reserve!(Int64, history, :conv_flags, 1, length(shifts))
+
+        old_flags = falses(length(shifts))
+        new_flags = falses(length(shifts))
+
+        old_flags .= iterable.residual.flag
+    end
+
     for (it, res) in enumerate(iterable)
         # if one preconditioning cycle is completed, swap the precon index
         #@printf("precon index: %d\n",precon_index)
@@ -57,12 +86,35 @@ function fgmressh!(x, b, A, M, shifts;
             end
             precon_index +=1
             iterable.barnoldi.currentprecons[1] = precon_index            
-        end        
+        end
         # set the diagonal element of the auxiliary matrix T to the currently 
         # applied preconditioning shift value
         BlockDiagonals.getblock(iterable.barnoldi.T, iterable.k)[1] = iterable.barnoldi.preconshifts[precon_index]
+        
+        if log
+            new_flags .= iterable.residual.flag
+            IterativeSolvers.nextiter!(history)
+            history[:resmat][history.iters,:] .= iterable.residual.current
+            history[:conv_flags][findall(x->x==true, xor.(old_flags,new_flags))] .= history.iters
+            old_flags .= new_flags
+        end
+
         verbose && @printf("%3d\t%1.2e\n", 1 + mod(it - 1, maxiter), maximum(res))
     end
 
-    log ? (x, iterable) : x
+    if log 
+        # the last step of the for loop calls iterate() one more time,
+        # so the last convergence history step needs to be performed here
+        new_flags .= iterable.residual.flag
+        IterativeSolvers.nextiter!(history)
+        history[:resmat][history.iters,:] .= iterable.residual.current
+        history[:conv_flags][findall(x->x==true, xor.(old_flags,new_flags))] .= history.iters
+        old_flags .= new_flags
+
+        iteration_time = time_ns() - iteration_time
+        history[:iteration_time] = iteration_time
+        history.mvps = iterable.mv_products
+    end
+
+    log ? (x, iterable, history) : x
 end

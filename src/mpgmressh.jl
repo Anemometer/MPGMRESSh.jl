@@ -24,13 +24,10 @@ mutable struct BlockArnoldiDecomp{elT, opA, opM, shiftT, precT}
     preconshifts::Array{shiftT, 1} # preconditioning shifts used to build the precons
     nprecons::Int64 # no. of preconditioners used to expand te search space at every iteration 
     npreconshifts::Int64 # no. of shifts used to construct the precons 
-    #preconshifts::Array{shiftT, 1} # shift parameters to be used for building the shift-and-invert preconditioners (optional if preconditioners are passed by the user)
 end
 # !TODO: figure out a sensible name for the type parameter T conflicting with the matrix name T
 function BlockArnoldiDecomp(A::opA, M::opM, maxiter::Int, allshifts::Array{shiftT, 1}, nprecons::Int64, preconshifts::Array{shiftT, 1}, precons::Array{precT, 1}, currentprecons::Array{Int16, 1}, elT::Type) where {opA, opM, shiftT, precT}
-    #nprecons = length(preconshifts)
     H = zeros(elT, nprecons * maxiter + 1, nprecons * maxiter)
-    #V = zeros(T, size(M, 1), nprecons * maxiter + 1)
     V = [zeros(elT, size(M, 1), 1)]
     Z = zeros(elT, size(M, 1), nprecons * maxiter)
 
@@ -141,7 +138,6 @@ function mpgmressh_iterable!(x, b, A, M, shifts, preconshifts, precons, nprecons
     # !TODO: make sure types of blockdiag entries T and those of V are eventually consistent!
     T = eltype(eltype(x))
 
-    #nprecons = length(preconshifts)
     nshifts = length(shifts)
 
     # set preconditioner indices to be used for BlockArnoldi expansion 
@@ -169,7 +165,6 @@ end
 
 # initializes the first column of V as normalized rhs 
 function init!(barnoldi::BlockArnoldiDecomp{T}, b, residual::Residual) where T
-    #first_dir = view(barnoldi.V, :, 1)
     barnoldi.V = [zeros(T, size(barnoldi.V[1], 1), 1)]
     first_dir = barnoldi.V[1]
 
@@ -194,7 +189,6 @@ function generate_preconshifts(shifts::Array{shiftT, 1}, npreconshifts) where sh
         ε = eps(shiftT)
     end
 
-    
     # shift real and imaginary parts (if nonempty) both by their minimum
     # values to move the ranges above zero, sample equidistantly log-spaced 
     # and then shift back into the the original range 
@@ -227,9 +221,6 @@ function generate_preconshifts(shifts::Array{shiftT, 1}, npreconshifts) where sh
             end
         end
 
-
-        #preconshiftsRe = (10.) .^ (LinRange(log10(minimum(real.(shifts))), log10(maximum(real.(shifts))), nprecons))
-        #preconshiftsIm = (10.) .^ (LinRange(log10(minimum(imag.(shifts))), log10(maximum(imag.(shifts))), nprecons))
         if shiftT <: Complex
             preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
         else
@@ -254,8 +245,6 @@ function converged(gsh::MPGMRESShIterable)
     has_converged = false
     
     if gsh.convergence == standard
-        #@printf("absres, β, btol: %1.5e, %1.5e, %1.5e\n", maximum(gsh.residual.absres), gsh.residual.β, gsh.btol)
-        #@printf("absres/β: %1.20e\n", maximum(gsh.residual.absres ./ gsh.residual.β))
         has_converged = (maximum(gsh.residual.absres ./ (gsh.residual.β)) < gsh.btol)
     end
 
@@ -272,41 +261,36 @@ function converged(gsh::MPGMRESShIterable)
 end
 
 done(gsh::MPGMRESShIterable, iteration::Int) = iteration >= gsh.maxiter || converged(gsh)
-#done(gsh::MPGMRESShIterable, iteration::Int) = iteration >= gsh.maxiter 
 
 function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
     if done(gsh, iteration)
         return nothing
     end
 
-    #nprecons = length(gsh.barnoldi.precons)
-
     # execute multiple preconditioned directions routine
-    MPDirections!(gsh.barnoldi, gsh.k, gsh.Wspace)
-    gsh.precon_solves += gsh.barnoldi.nprecons
-    
-    global hsigbefore = gsh.barnoldi.H
+    gsh.precon_solves += MPDirections!(gsh.barnoldi, gsh.k, gsh.Wspace)
+
     # execute the block orthogonalization routine
     for col in eachcol(gsh.Wspace)
         # iterate through the columns of Wspace to keep the 
         # iterative method matrix free
         col .= gsh.barnoldi.M * col
+        gsh.mv_products += 1
     end    
     gsh.mv_products += BlockArnoldiStep!(gsh.Wspace, gsh.barnoldi.V, view(gsh.barnoldi.H, :, (1 + (gsh.k - 1) * gsh.barnoldi.nprecons):(gsh.k * gsh.barnoldi.nprecons)))
 
-    #if gsh.explicit_residual
-    #    @printf("x[1] size: (%d, %d)\n", size(gsh.x[1],1), size(gsh.x,2))
-    #    @printf("A, M size: (%d, %d), (%d,%d)\n", size(gsh.barnoldi.A, 1), size(gsh.barnoldi.A, 2), size(gsh.barnoldi.M, 1), size(gsh.barnoldi.M, 2))
-    #    @printf("b size: (%d,%d)\n", size(gsh.b,1), size(gsh.b,2))
-    #    @printf("residuals.absres size: (%d, %d)\n", size(gsh.residual.absres,1), size(gsh.residual.absres,2))
-    #    gsh.residual.absres .= [norm(gsh.b - (gsh.barnoldi.A + shift .* gsh.barnoldi.M) * gsh.x[i]) for (i, shift) in enumerate(gsh.barnoldi.allshifts)]
-    #end
-
-    #hh = update_residual!(gsh.residual, gsh.barnoldi, gsh.k)
-    update_residual!(gsh.residual, gsh.barnoldi, gsh.k, gsh.btol)
-
-    # experimental: use the newly implemented Ayachour method for convergence monitoring
-    copyto!(gsh.residual.absres, gsh.residual.current)
+    if gsh.explicit_residual
+        for (i, σ) in enumerate(gsh.barnoldi.allshifts)
+            y = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
+            gsh.x[i] = gsh.barnoldi.Z[:, 1:size(y, 1) - 1] * y[1:end-1]
+            gsh.mv_products += 1
+        end
+        gsh.residual.absres .= [norm(gsh.b - (gsh.barnoldi.A + shift * gsh.barnoldi.M) * gsh.x[i]) for (i, shift) in enumerate(gsh.barnoldi.allshifts)]
+    else
+        gsh.mv_products += update_residual!(gsh.residual, gsh.barnoldi, gsh.k, gsh.btol)
+        # use the Ayachour method for convergence monitoring
+        copyto!(gsh.residual.absres, gsh.residual.current)
+    end
 
     if done(gsh, iteration + 1)
         # compute the iterates after residual monitoring indicates convergence 
@@ -314,26 +298,12 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
         # compute solution iterate using fast Hessenberg
         for (i, σ) in enumerate(gsh.barnoldi.allshifts)
             # solve minimal residual problem for σ
-            y, res = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
-            #@printf("shifted lsq residual at %d, %f: %f\n", i, imag(σ), res)
-            
-            # check if hh contains the right entries 
-            #@printf("hsig[end-3:end, end-2:end] == hh[:,(i-1)*3 + 1:i*3]? %d \n", hsig.H[end-3:end,end-2:end] == hh[:,(i-1)*3 + 1:i*3])
-            #@printf("hsig[end - 1, end] == h? %d\n", hsig.H[end-1,end] == hh[1,i])
-            #@printf("hsig[:, end-2:end] == hh[:,(i-1)*3 + 1:i*3]? %d \n", hsig.H[:,end-2:end] == hh[:,(i-1)*3 + 1:i*3])
-            
-            #@printf("barnoldi.Z[:,1:size(y,1)-1] size: (%d,%d)\n", size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 1), size(gsh.barnoldi.Z[:, 1:size(y, 1) - 1], 2))
-            #@printf("y[1:end-1] size: (%d, %d)\n", size(y,1) - 1, size(y,2) - 1)
+            y = solve_shifted_lsq(gsh.barnoldi, σ, gsh.residual.β, gsh.k)
             gsh.x[i] = gsh.barnoldi.Z[:, 1:size(y, 1) - 1] * y[1:end-1]
-            #display(gsh.x[i])
             gsh.mv_products += 1
         end
         if gsh.explicit_residual
-            #@printf("x[1] size: (%d, %d)\n", size(gsh.x[1],1), size(gsh.x,2))
-            #@printf("A, M size: (%d, %d), (%d,%d)\n", size(gsh.barnoldi.A, 1), size(gsh.barnoldi.A, 2), size(gsh.barnoldi.M, 1), size(gsh.barnoldi.M, 2))
-            #@printf("b size: (%d,%d)\n", size(gsh.b,1), size(gsh.b,2))
-            #@printf("residuals.absres size: (%d, %d)\n", size(gsh.residual.absres,1), size(gsh.residual.absres,2))
-            gsh.residual.absres .= [norm(gsh.b - (gsh.barnoldi.A + shift .* gsh.barnoldi.M) * gsh.x[i]) for (i, shift) in enumerate(gsh.barnoldi.allshifts)]            
+            gsh.residual.absres .= [norm(gsh.b - (gsh.barnoldi.A + shift * gsh.barnoldi.M) * gsh.x[i]) for (i, shift) in enumerate(gsh.barnoldi.allshifts)]
         end
         return nothing
     end
@@ -344,25 +314,14 @@ function iterate(gsh::MPGMRESShIterable, iteration::Int=start(gsh))
 end
 
 function solve_shifted_lsq(barnoldi::BlockArnoldiDecomp{T}, σ::shiftT, β::resT, k::Int) where {T, shiftT, resT}
-    #@printf("lsq_solve: k = %d \n", k)
-    #nprecons = length(barnoldi.precons)
     # !TODO: optimize using views
     Hσ = IterativeSolvers.FastHessenberg(barnoldi.E[1:(1 + barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)] + (barnoldi.H[1:(1 + barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)])))
-    #Hσ = qr(barnoldi.E[1:(1 + nprecons * k), 1:(nprecons * k)] + (barnoldi.H[1:(1 + nprecons * k), 1:(nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(nprecons * k), 1:(nprecons * k)])))
-    Hbak = barnoldi.E[1:(1 + barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)] + (barnoldi.H[1:(1 + barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)] * (UniformScaling(σ) - barnoldi.T[1:(barnoldi.nprecons * k), 1:(barnoldi.nprecons * k)]))
-
     e1 = zeros(T, size(Hσ, 1), 1) # rhs has as many rows as Hσ
     e1[1] = β
-    e2 = deepcopy(e1)
-
-    global hsigafter = Matrix(barnoldi.H)
-    global hsig = deepcopy(Hσ)
-    
-    #ldiv!(Hσ, e1)
+        
     ldiv!(Hσ, e1)
 
-    #return e1, norm(b - hsig.H * e1[1:end-1])
-    return e1, norm(e2 - Hbak * e1[1:end-1])
+    return e1
 end
 
 """
@@ -379,23 +338,16 @@ function BlockArnoldiStep!(W::Matrix{T}, V::Array{Matrix{T}, 1}, H::StridedVecOr
     cumulsize = 0 # index of last filled row of Hessenberg matrix 
     mv_products = 0 # number of matrix-vector products
 
-    #@printf("BStep: types of W, V, H: \n")
-    #display(typeof(W))
-    #display(typeof(V))
-    #display(typeof(H))
-
     for (i,v) in enumerate(V)
-        bsize = size(v, 2) # blocksize is function of BlockDiagonals
-        #@printf("size(V): (%d, %d)\n", size(v,1), size(v,2))
-        #@printf("size(W): (%d, %d)\n", size(W,1), size(W,2))
-        #H[cumulsize+1:cumulsize+bsize, :] = adjoint(v) * W 
+        bsize = size(v,2)
         copyto!(view(H, cumulsize + 1:cumulsize + bsize, :), adjoint(v) * W)
-        mv_products += bsize * size(W, 2)
+        mv_products += bsize * size(W,2)
         W = W - v * H[cumulsize+1:cumulsize+bsize, :]
+        mv_products += size(v,1) * size(W,2)
         cumulsize += bsize
     end
-    fact = qr(W) # thin qr-factorization without pivoting or rank reveal for now 
-    #fact2 = qr(W,Val(true))
+    fact = qr(W)
+    #fact2 = qr(W,Val(true)) # with pivoting to detect rank deficiencies
     #if rank(fact2.R)< size(fact2.R,2)
     #    @printf("Rank deficiency! Permutation:")
     #    display(fact2.p)
@@ -410,75 +362,46 @@ function BlockArnoldiStep!(W::Matrix{T}, V::Array{Matrix{T}, 1}, H::StridedVecOr
 end
 
 function MPDirections!(barnoldi::BlockArnoldiDecomp, k::Int, Wspace)
-    #v = view(barnoldi.V, :, k)
     m = size(barnoldi.V[k], 2)
     v = view(barnoldi.V[k], :, m)
-    #nprecons = length(barnoldi.precons)
-    #@printf("nprecons: %d\n", nprecons)
-
-    # fill search directions for iteration k with precon solves
-    #for (i, precon) in enumerate(barnoldi.precons)
-    #    ldiv!(view(Wspace, :, i), precon, v)
-    #end
-
-    #display(barnoldi.currentprecons)
-    #display(barnoldi.precons[barnoldi.currentprecons[1]])
+   
+    solves = 0
 
     for (i, index) in enumerate(barnoldi.currentprecons)
         ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
+        solves += 1
     end
-
-    #display("WSpace size: " * string(size(Wspace)))
-    #display("barnoldi.Z indices: " * string((size(barnoldi.Z, 1),(k-1)*nprecons + 1, k*nprecons)))
-    
-    #@printf("Wspace after MPDirections = \n")
-    #display(Wspace)
 
     # add the search directions to Z
     copyto!(view(barnoldi.Z, :, ((k-1)*barnoldi.nprecons + 1):(k*barnoldi.nprecons)), Wspace)
-    #@printf("barnoldi.Z[:,((k-1)*nprecons + 1):(k*nprecons)]: \n")
-    #display(barnoldi.Z[:, ((k-1)*nprecons + 1):(k*nprecons)])
+   
+    return solves
 end
 
 function init_residual!(r::Residual{elT, resT}, β) where {elT, resT}
     r.accumulator = zeros(elT, size(r.accumulator))
     view(r.accumulator, 1, :) .= β * one(resT)
     r.β = β
-    #@printf("accumulator after init: \n")
-    #display(r.accumulator)
 end
 
 # compute the current residual according to the ideas laid out in 
 # [Ayachour E.H., A fast implementation for GMRES method](https://ris.utwente.nl/ws/files/26304887/fast.pdf)
 # which is free of any Givens rotations and more accurate on the test examples
 function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int, btol::Real)
-    # hh saves the isolated Hessenberg parts for debugging purposes
-    #global hh = zeros(ComplexF64, k * barnoldi.nprecons + 1, 3*size(barnoldi.allshifts, 1))
+    mv_products = 0
     for (i, σ) in enumerate(barnoldi.allshifts)
         if r.flag[i]
             continue
         end
  
         Hkσ = barnoldi.H[1:(k * barnoldi.nprecons + 1), ((k-1) * barnoldi.nprecons + 1):(k * barnoldi.nprecons)] * (UniformScaling(σ) - BlockDiagonals.getblock(barnoldi.T, BlockDiagonals.nblocks(barnoldi.T)))
+        mv_products += size(Hkσ,1) * size(Hkσ,2)
         
-        #Hkσ[end - 3,:] .+= 1.0
         Hkσ[end - barnoldi.nprecons,:] .+= 1.0
 
         cols = size(Hkσ, 2)
         
-        #copyto!(view(hh, :,(i-1)*cols+1:i*cols), Hkσ)
-
         offset = barnoldi.nprecons * (k - 1) + 1
-
-        #if i==28
-        #    @printf("Hk[offset: offset+3, :] for σ = %f\n", imag(σ))
-        #    display(Hkσ[offset:offset+3, :])                
-        #end
-
-        #if i==55
-        #    @printf("Hk[offset: offset+3, :] for σ = %f\n", imag(σ))
-        #    display(Hkσ[offset:offset+3, :])
-        #end
         
         for j=1:cols
             offset = barnoldi.nprecons * (k - 1) + 1
@@ -488,7 +411,6 @@ function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int, bto
                 if Hkσ[2,1] == 0
                     r.flag[i] = true
                     r.current[i] = 0.
-                    #@printf("Fired Hkk = 0 at i=%d, offset + j - 1 = %d!\n", i, offset + j - 1)
                     break
                 end
                 r.vec[1, i] = conj(Hkσ[1,1] / Hkσ[2,1])
@@ -497,37 +419,31 @@ function update_residual!(r::Residual, barnoldi::BlockArnoldiDecomp, k::Int, bto
                 continue                
             end
 
-            # for now: assume convergence for a zero subdiag element until 
-            # I have a theorem worked out specifically - in tests atm this only happens 
+            # heuristic: assume convergence (lucky breakdown) for a zero subdiag element
+            # presently, this only happens in tests
             # due to some precon shifts matching input shifts producing zero columns 
             # in the Hessenberg matrix
 
             if Hkσ[offset + j, j] == 0
                 r.flag[i] = true
                 r.current[i] = 0.
-                #@printf("Fired Hkk = 0 at i=%d, offset + j - 1 = %d!\n", i, offset + j - 1)
                 break
             end
 
             r.vec[offset + j - 1, i] = conj((Hkσ[1,j] - dot(r.vec[1:offset + j - 2, i], Hkσ[2:offset + j - 1, j]))/Hkσ[offset + j, j])
+            mv_products += 1
             r.accumulator[i] += abs2(r.vec[offset + j - 1, i])
             r.current[i] = r.β / √r.accumulator[i]
 
             # if the absolute residual is below btol, we consider the 
             # system converged
             if abs(r.current[i]) < btol
-                #@printf("System i=%d converged with absres=%f\n",i,r.current[i])
                 r.flag[i] = true
             end
-
-            #if i==size(barnoldi.allshifts,1)
-            #    @printf("setting r.vec[offset+j-1,i]: (%d,%d)\n", offset+j-1, i)
-            #end
         end
     end
 
-    #@printf("max acc: %1.2e \n", maximum(r.current))
-    #return hh    
+    return mv_products  
 end
 
 function mpgmressh(b, A, M, shifts; kwargs...)
@@ -543,23 +459,10 @@ function mpgmressh(b, A, M, shifts; kwargs...)
         fill!(x[k], zero(T))
     end
 
-    #@printf("typeof(x): ")
-    #display(typeof(x))
-    #@printf("typeof(b): ")
-    #display(typeof(b))
-
-    #@printf("typeof(shifts): ")
-    #display(typeof(shifts))
-
-    #@printf("typeof(M, A): ")
-    #display(typeof(M))
-    #display(typeof(A))
-
     return mpgmressh!(x, b, A, M, shifts; kwargs...)
 end
 
-# !TODO: adjust up mpgmres! calls to the different constructors for 
-# the iterable object
+
 function mpgmressh!(x, b, A, M, shifts;
     nprecons = 3,
     btol = sqrt(eps(real(eltype(b)))),
@@ -575,8 +478,22 @@ function mpgmressh!(x, b, A, M, shifts;
     preconAMG = false,
     preconreltol = btol 
 )
-    # !TODO: create IterativeSolvers.history objects for tracking convergence history
-
+    # create IterativeSolvers.history objects for tracking convergence history
+    if log
+        history = IterativeSolvers.ConvergenceHistory(partial = !log)
+        history[:btol] = btol
+        history[:explicit_residual] = explicit_residual
+        # store precon solve info
+        history[:preconmethod] = preconmethod
+        history[:preconmaxiter] = preconmaxiter
+        history[:preconrestart] = preconrestart
+        history[:preconAMG] = preconAMG
+        history[:preconreltol] = preconreltol
+        # reserve residual info 
+        IterativeSolvers.reserve!(history, :resmat, maxiter, length(shifts))
+        
+        setup_time = time_ns()
+    end
     # construct preconditioners
     preconshifts = generate_preconshifts(shifts, nprecons)
     precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
@@ -587,11 +504,45 @@ function mpgmressh!(x, b, A, M, shifts;
     precons, nprecons; btol = btol, atol = atol, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
 
-    # perform iteration
-    #@time
+    if log 
+        setup_time = time_ns() - setup_time
+        history[:setup_time] = setup_time
+
+        iteration_time = time_ns()
+
+        # set up convergence flag array
+        IterativeSolvers.reserve!(Int64, history, :conv_flags, 1, length(shifts))
+
+        old_flags = falses(length(shifts))
+        new_flags = falses(length(shifts))
+
+        old_flags .= iterable.residual.flag
+    end
+    
     for (it, res) in enumerate(iterable)
+        if log
+            new_flags .= iterable.residual.flag
+            IterativeSolvers.nextiter!(history)
+            history[:resmat][history.iters,:] .= iterable.residual.current
+            history[:conv_flags][findall(x->x==true, xor.(old_flags,new_flags))] .= history.iters
+            old_flags .= new_flags
+        end
         verbose && @printf("%3d\t%1.2e\n", 1 + mod(it - 1, maxiter), maximum(res))
     end
+    
+    if log 
+        # the last step of the for loop calls iterate() one more time,
+        # so the last convergence history step needs to be performed here
+        new_flags .= iterable.residual.flag
+        IterativeSolvers.nextiter!(history)
+        history[:resmat][history.iters,:] .= iterable.residual.current
+        history[:conv_flags][findall(x->x==true, xor.(old_flags,new_flags))] .= history.iters
+        old_flags .= new_flags
 
-    log ? (x, iterable) : x
+        iteration_time = time_ns() - iteration_time
+        history[:iteration_time] = iteration_time
+        history.mvps = iterable.mv_products
+    end
+
+    log ? (x, iterable, history) : x
 end

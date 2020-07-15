@@ -45,7 +45,7 @@ println("Running FGMRESSh test for dense matrices...")
             end
         end
         
-        x,it = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
         preconreltol=preconreltol,
@@ -78,7 +78,7 @@ println("Running FGMRESSh test for sparse matrices...")
             end
         end
         
-        x,it = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
         preconreltol=preconreltol,
@@ -108,7 +108,7 @@ println("Running FGMRESSh test for LinearMaps...")
         maxiter = n
         preconreltol = 1.0e-17
         
-        x,it = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
         preconreltol=preconreltol,
@@ -134,7 +134,7 @@ println("Running FGMRESSh AMG test for sparse matrices...")
         maxiter = n
         preconreltol = 1.0e-17
         
-        x,it = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
         preconreltol=preconreltol,
@@ -161,7 +161,7 @@ println("Running FGMRESSh Arnoldi decomposition test for sparse matrices...")
     maxiter = n
     preconreltol = 1.0e-17
     
-    x,it = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+    x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
     maxiter=maxiter, log = true, verbose = false,
     btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
     preconreltol=preconreltol,

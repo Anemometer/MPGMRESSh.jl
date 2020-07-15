@@ -80,9 +80,17 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
         grid=VoronoiFVM.Grid(switches, triin)
     end
     #VoronoiFVM.plot(Plotter, grid)
+    """
     if(Plotter != nothing)
         p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
+        #display(p)
+        if VoronoiFVM.ispyplot(Plotter)
+            Plotter.savefig("grid.svg")
+        else
+            Plotter.svg(p,"grid.svg")
+        end
     end
+    """
     @printf("Press ENTER to continue...")
     readline();
 
@@ -136,17 +144,26 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     inival.=0.0
     solve!(steadystate,inival,sys)
 
-    if trisurf
-        Plotter.plot_trisurf(tridata(grid)..., steadystate[1,:], cmap = "cool")
+    if trisurf && VoronoiFVM.ispyplot(Plotter)
+        #Plotter.plot_trisurf(VoronoiFVM.ExtendableGrids.tridata(grid)..., steadystate[1,:], cmap = "cool")
+        tri = VoronoiFVM.ExtendableGrids.tridata(grid)
+        p = Plotter.plot_trisurf(tri..., steadystate[1,:], cmap="cool")
+        Plotter.savefig("steadystate_surf.svg")
         # Spectral or cool
     else
         #VoronoiFVM.plot(Plotter, grid, steadystate[1,:])
+        # Plots currently does not support this branch
         if(Plotter != nothing)
-            VoronoiFVM.ExtendableGrids.plot(grid, steadystate[1,:], Plotter = Plotter)
+            p = VoronoiFVM.ExtendableGrids.plot(grid, steadystate[1,:], Plotter = Plotter, cmap="cool")
+            if VoronoiFVM.ispyplot(Plotter)
+                Plotter.savefig("steadystate_contour.svg")
+            else
+                Plotter.svg(p,"steadystate_contour.svg")
+            end
         end
     end
 
-    @printf("Press Enter to continue...")
+    @printf("Press ENTER to continue...")
     readline()
 
     # Create Impedance system from steady state
@@ -326,10 +343,13 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
         end
 
         p=Plotter.plot(grid=true)
-        Plotter.plot!(p,real(allIL),imag(allIL),label="calc")
+        #Plotter.plot!(p,real(allIL),imag(allIL),label="calc")
+        #Plotter.plot!(p,real(allIL),imag(allIL),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
+        Plotter.plot!(p,real(allILMPGMRES),imag(allILMPGMRES),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
 
         #Plotter.gui(p)
-        display(p)
+        #display(p)
+        Plotter.svg(p,"impedance.svg")
     end
 
     return sys, isys, allIL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprecon;
