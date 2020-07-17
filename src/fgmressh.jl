@@ -64,7 +64,7 @@ function fgmressh!(x, b, A, M, shifts;
 
     if log 
         setup_time = time_ns() - setup_time
-        history[:setup_time] = setup_time
+        history[:setup_time] = Int(setup_time)/(1e9)
 
         iteration_time = time_ns()
 
@@ -112,8 +112,11 @@ function fgmressh!(x, b, A, M, shifts;
         old_flags .= new_flags
 
         iteration_time = time_ns() - iteration_time
-        history[:iteration_time] = iteration_time
+        history[:iteration_time] = Int(iteration_time)/(1e9)
         history.mvps = iterable.mv_products
+
+        history[:resmat] = history[:resmat][1:history.iters,:]
+        IterativeSolvers.setconv(history, converged(iterable))
     end
 
     log ? (x, iterable, history) : x
