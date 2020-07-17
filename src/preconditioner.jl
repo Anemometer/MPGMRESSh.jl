@@ -45,17 +45,9 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     precons = Array{SaIPreconditioner}(undef, npreconshifts)
 
     if method == LUFac
-        LU = lu(A + preconshifts[1] .* M)
-        precon = SaIPreconditioner(preconshifts[1], LUFac, LU)
-        precons[1] = precon
-        
-        if npreconshifts >= 2
-            for i = 2:npreconshifts
-                LU = lu(A + preconshifts[i] * M)
-                precons[i] = SaIPreconditioner(preconshifts[i], LUFac, LU)
-            end
+        Threads.@threads for i=1:length(preconshifts)
+            precons[i] = SaIPreconditioner(preconshifts[i], LUFac, lu(A + preconshifts[i] * M))
         end
-
         return precons
     end
     
@@ -67,7 +59,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         x = zeros(T, m)
         b = ones(T, m)
         pl = Identity()
-        for (i,v) in enumerate(preconshifts)
+        Threads.@threads for i=1:length(preconshifts)
             K = A + preconshifts[i]*M
             if AMG
                 K = Symmetric(sparse(K))
@@ -88,7 +80,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         x = zeros(T, m)
         b = ones(T, m)
         pl = Identity()
-        for (i,v) in enumerate(preconshifts)
+        Threads.@threads for i=1:length(preconshifts)
             K = A + preconshifts[i] * M
             if AMG
                 K = Symmetric(sparse(K))
@@ -108,7 +100,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         m = size(M, 2)
         x = zeros(T, m)
         b = ones(T, m)
-        for (i,v) in enumerate(preconshifts)
+        Threads.@threads for i=1:length(preconshifts)
             it = IterativeSolvers.DenseGaussSeidelIterable(A + preconshifts[i] * M, x, b, maxiter)
             precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = reltol)
         end
@@ -122,7 +114,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         x = zeros(T, m)
         b = ones(T, m)
         pl = Identity()
-        for (i,v) in enumerate(preconshifts)
+        Threads.@threads for i=1:length(preconshifts)
             # note: maxiter here takes the role of maximum matrix-vector products performed 
             # in the bicgstab algorithm as specified in IterativeSolvers
             # default: l=1 for standard BiCGStab
@@ -147,6 +139,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     end
 end
 
+# !TODO: make ldiv! thread safe
 function ldiv!(y, pc::SaIPreconditioner, v)
     if pc.method == LUFac 
         # simply call the ldiv method for LU factorizations
@@ -189,13 +182,18 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         pc.methoddata.residual = norm(pc.methoddata.r)
 
         #j = 1
+        #println("\t\t thread: $(Threads.threadid())")
         #println("\t precon solve:")
         for (it,res) in enumerate(pc.methoddata)
+            #println("\t\t thread: $(Threads.threadid())")
             #println("\t it, res: ", it, ", ", res)
             #j = j+1
         end
+        #println("\t\t thread: $(Threads.threadid())")
         #println("\t took ", j, " iterations")
         copyto!(y, pc.methoddata.x)
+
+        return 0
     end
 
     if pc.method == GaussSeidel

@@ -367,9 +367,20 @@ function MPDirections!(barnoldi::BlockArnoldiDecomp, k::Int, Wspace)
    
     solves = 0
 
-    for (i, index) in enumerate(barnoldi.currentprecons)
-        ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
-        solves += 1
+    # support parallel precon solves for the LU case 
+    # iterative solvers are not thread-save yet
+    # ! assumption: all preconditioners are of the same type 
+    if barnoldi.precons[1].method == LUFac
+        Threads.@threads for i=1:length(barnoldi.currentprecons)
+            index = barnoldi.currentprecons[i]
+            ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
+            solves += 1
+        end
+    else
+        for (i, index) in enumerate(barnoldi.currentprecons)
+            ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
+            solves += 1
+        end    
     end
 
     # add the search directions to Z
@@ -499,7 +510,7 @@ function mpgmressh!(x, b, A, M, shifts;
     precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
     restart = preconrestart, AMG = preconAMG, reltol = preconreltol)
     
-    # instantiate iterable
+    # instantiate iterable 
     global iterable = mpgmressh_iterable!(x, b, A, M, shifts, preconshifts,
     precons, nprecons; btol = btol, atol = atol, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
