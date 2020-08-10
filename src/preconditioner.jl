@@ -2,6 +2,8 @@ import LinearAlgebra.ldiv!
 using IterativeSolvers, LinearAlgebra, SparseArrays
 # name clash with GaussSeidel in PreconMethod: use needed methods directly
 using AlgebraicMultigrid: ruge_stuben, aspreconditioner
+using ExtendableSparse: JacobiPreconditioner
+using IncompleteLU: ilu
 
 export PreconMethod, generate_preconditioners
 
@@ -39,6 +41,9 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     maxiter = size(A,2),
     restart = min(20, size(A,2)),
     AMG = false, # flag to provide AMG precon for Krylov methods
+    jacobi=false, # flag to provide jacobi precon for Krylov methods
+    iluprec=false, # flag to provide ILU precon for Krylov methods 
+    τ=0.1, # drop threshold parameter for IncompleteLU.ilu call
     reltol = sqrt(eps(real(eltype(A))))) where shiftT
     
     npreconshifts = length(preconshifts)
@@ -47,6 +52,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     if method == LUFac
         Threads.@threads for i=1:length(preconshifts)
             precons[i] = SaIPreconditioner(preconshifts[i], LUFac, lu(A + preconshifts[i] * M))
+            #println("\t set up precon $i on thread $(Threads.threadid())")
         end
         return precons
     end
@@ -65,6 +71,12 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
                 K = Symmetric(sparse(K))
                 ml = ruge_stuben(K)
                 pl = aspreconditioner(ml)
+            end
+            if jacobi
+                pl = JacobiPreconditioner(K)
+            end
+            if iluprec
+                pl = ilu(K,τ=τ)
             end
             it = IterativeSolvers.gmres_iterable!(x, K, b, Pl = pl, maxiter=maxiter, restart=restart)
             it.reltol = reltol
@@ -86,6 +98,12 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
                 K = Symmetric(sparse(K))
                 ml = ruge_stuben(K)
                 pl = aspreconditioner(ml)
+            end
+            if jacobi
+                pl = JacobiPreconditioner(K)
+            end
+            if iluprec
+                pl = ilu(K,τ=τ)
             end
             it = IterativeSolvers.cg_iterator!(x, K, b, pl, maxiter=maxiter)
             it.reltol = reltol
@@ -124,6 +142,12 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
                 ml = ruge_stuben(K)
                 pl = aspreconditioner(ml)
             end
+            if jacobi
+                pl = JacobiPreconditioner(K)
+            end
+            if iluprec
+                pl = ilu(K,τ=τ)
+            end
             it = IterativeSolvers.bicgstabl_iterator!(x, K, b, 1, Pl = pl, max_mv_products=maxiter, tol=reltol)
             precons[i] = SaIPreconditioner(preconshifts[i], BiCGStab, it, tol = reltol)
         end
@@ -153,7 +177,11 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         copyto!(pc.methoddata.b, v)
         # initiate first search direction and residual data
         pc.methoddata.residual.current = IterativeSolvers.init!(pc.methoddata.arnoldi, pc.methoddata.x, pc.methoddata.b, pc.methoddata.Pl, pc.methoddata.Ax)
+        # the least squares solve is called with iterable.β instead of residual.β
+        # so we need to explicitly reset both β's
+        pc.methoddata.β = pc.methoddata.residual.current 
         IterativeSolvers.init_residual!(pc.methoddata.residual, pc.methoddata.residual.current)
+        pc.methoddata.reltol = pc.tol * pc.methoddata.residual.current
         # perform the iteration
         #println("\t precon solve: ")
         #j = 1
@@ -180,6 +208,7 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         mul!(pc.methoddata.c, pc.methoddata.A, pc.methoddata.x)
         pc.methoddata.r .-= pc.methoddata.c
         pc.methoddata.residual = norm(pc.methoddata.r)
+        pc.methoddata.reltol = pc.tol * pc.methoddata.residual
 
         #j = 1
         #println("\t\t thread: $(Threads.threadid())")
@@ -246,7 +275,7 @@ function ldiv!(y, pc::SaIPreconditioner, v)
         pc.methoddata.σ = one(T)
         pc.methoddata.M = zeros(T, l+1, l+1)
 
-        pc.methoddata.reltol = pc.tol 
+        pc.methoddata.reltol = pc.tol * pc.methoddata.residual
         
         #println(" \t precon solve:")
         #j = 1

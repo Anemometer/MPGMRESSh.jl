@@ -487,6 +487,9 @@ function mpgmressh!(x, b, A, M, shifts;
     preconmaxiter = size(A,2),
     preconrestart = min(20, size(A,2)),
     preconAMG = false,
+    preconjacobi = false,
+    preconilu = false,
+    τ=0.1,
     preconreltol = btol 
 )
     # create IterativeSolvers.history objects for tracking convergence history
@@ -508,7 +511,7 @@ function mpgmressh!(x, b, A, M, shifts;
     # construct preconditioners
     preconshifts = generate_preconshifts(shifts, nprecons)
     precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
-    restart = preconrestart, AMG = preconAMG, reltol = preconreltol)
+    restart = preconrestart, AMG = preconAMG, jacobi = preconjacobi, iluprec = preconilu, τ = τ, reltol = preconreltol)
     
     # instantiate iterable 
     global iterable = mpgmressh_iterable!(x, b, A, M, shifts, preconshifts,
@@ -518,9 +521,7 @@ function mpgmressh!(x, b, A, M, shifts;
     if log 
         setup_time = time_ns() - setup_time
         history[:setup_time] = Int(setup_time)/(1e9)
-
-        iteration_time = time_ns()
-
+        
         # set up convergence flag array
         IterativeSolvers.reserve!(Int64, history, :conv_flags, 1, length(shifts))
 
@@ -528,6 +529,8 @@ function mpgmressh!(x, b, A, M, shifts;
         new_flags = falses(length(shifts))
 
         old_flags .= iterable.residual.flag
+        
+        iteration_time = time_ns()
     end
     
     for (it, res) in enumerate(iterable)

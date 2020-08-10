@@ -1,5 +1,10 @@
 using LinearAlgebra
 
+@enum precon begin 
+    Jacobi=1
+    ILU=2
+end
+
 function test_Arnoldi_relationship(it_mpgmressh)
     nprecons = length(it_mpgmressh.barnoldi.precons)
     A = it_mpgmressh.barnoldi.A 

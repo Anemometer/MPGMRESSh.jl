@@ -209,6 +209,7 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     UZ=unknowns(isys)
     noωs = Int64(ceil((log(2) + 4* log(10))/(log(6) - log(5))))
     allUZ = zeros(ComplexF64, (size(UZ)[2], noωs))
+    allDirRes = zeros(noωs)
 
     # control whether an animation of the time evolution
     # of IL should be created and saved
@@ -292,15 +293,19 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     # preconditioner solution method: LU factorization
 
     # now calculate the associated measurements for the unpreconditioned system
+    # and the absolute residuals of the direct solutions
     allILMPGMRES = zeros(Complex{Float64}, length(allIL))
     for (i, iω) in enumerate(iωs)
         allILMPGMRES[i] = (dmeas_stdy*values(UZω[i]))[1] + iω * (dmeas_tran*values(UZω[i]))[1]
+        allDirRes[i] = norm(isys.F[1,:] - (sys.matrix + iω * isys.storderiv)*allUZ[:,i])
     end
+
+    @printf("Maximal absolute residual of the direct solutions across shifts: %1.5e\n", maximum(allDirRes))
 
     # the large penalty factor, however, spoils the absolute residual due to numerical artifacts
     absres = [norm(it_mpgmressh.b - (it_mpgmressh.barnoldi.A + shift .* it_mpgmressh.barnoldi.M) * it_mpgmressh.x[i]) for (i, shift) in enumerate(it_mpgmressh.barnoldi.allshifts)]
-    @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
-    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
+    @printf("Maximal absolute residual of MPGMRESSh across shifts: %1.5e\n", maximum(absres))
+    @printf("Maximal relative residual of MPGMRESSh across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
 
     maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
     @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)

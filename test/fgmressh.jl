@@ -28,10 +28,10 @@ println("Running FGMRESSh test for dense matrices...")
     @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.LUFac,MPGMRESSh.CG,MPGMRESSh.GMRES,MPGMRESSh.GaussSeidel,MPGMRESSh.BiCGStab)
         # use Poisson test matrix for tests since it is SPD and diagonally dominant
         preconvals = 3
-        A = Matrix(poisson(n))
-        M = diagm(ones(n))
+        A = Matrix(poisson(T,n))
+        M = diagm(ones(T,n))
         shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
-        b = ones(n)
+        b = ones(T,n)
         
         maxiter = n
         preconreltol = 1.0e-17
@@ -61,10 +61,10 @@ println("Running FGMRESSh test for sparse matrices...")
     @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.LUFac,MPGMRESSh.CG,MPGMRESSh.GMRES,MPGMRESSh.GaussSeidel,MPGMRESSh.BiCGStab)
         preconvals = 3
         # use Poisson test matrix for tests since it is SPD and diagonally dominant
-        A = poisson(n)
-        M = sparse(diagm(ones(n)))
+        A = poisson(T,n)
+        M = sparse(diagm(ones(T,n)))
         shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
-        b = ones(n)
+        b = ones(T,n)
 
         maxiter = n
         preconreltol = 1.0e-17
@@ -96,14 +96,14 @@ println("Running FGMRESSh test for LinearMaps...")
         # use the same LinearMap example as IterativeSolvers.gmres
         # and the poisson example for the CG case
         if preconmethod == MPGMRESSh.CG
-            A = LinearMap(poisson(n))
+            A = LinearMap(poisson(T,n))
         else
-            A = LinearMap(cumsum!, n; ismutating = true)
+            A = LinearMap{T}(cumsum!, n; ismutating = true)
         end
-        M = LinearMap(diagm(ones(n)))
+        M = LinearMap(diagm(ones(T,n)))
         
         shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
-        b = ones(n)
+        b = ones(T,n)
         
         maxiter = n
         preconreltol = 1.0e-17
@@ -126,10 +126,10 @@ println("Running FGMRESSh AMG test for sparse matrices...")
     @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.CG,MPGMRESSh.BiCGStab)
         preconvals = 3
         # use Poisson test matrix for tests since it is SPD and diagonally dominant
-        A = poisson(n)
-        M = sparse(diagm(ones(n)))
+        A = poisson(T,n)
+        M = sparse(diagm(ones(T,n)))
         shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
-        b = ones(n)
+        b = ones(T,n)
         
         maxiter = n
         preconreltol = 1.0e-17
@@ -139,6 +139,43 @@ println("Running FGMRESSh AMG test for sparse matrices...")
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
         preconreltol=preconreltol,
         preconAMG = true,
+        preconmaxiter=3*size(A,2),
+        preconrestart=size(A,2));
+        
+        @test maximum(test_residual(it)) / norm(b) < it.btol;
+    end;
+end;
+
+# test FGMRESSh with Jacobi and ILU preconditioners for 
+# GMRES and BiCGStab preconditioner solves 
+println("Running FGMRESSh Jacobi & ILU test for sparse matrices...")
+@testset "FGMRESSh test for $preconditioner as Krylov preconditioner" for preconditioner in (Jacobi, ILU)
+    @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.GMRES,MPGMRESSh.BiCGStab)
+        preconvals = 3
+        # use Poisson test matrix for tests since it is SPD and diagonally dominant
+        A = poisson(n)
+        M = sparse(diagm(ones(n)))
+        shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
+        b = ones(n)
+        
+        maxiter = n
+        preconreltol = 1.0e-17
+
+        preconjacobi = false
+        preconilu = false
+
+        if preconditioner == Jacobi
+            preconjacobi = true 
+        else
+            preconilu = true
+        end
+
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        maxiter=maxiter, log = true, verbose = false,
+        btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
+        preconreltol=preconreltol,
+        preconjacobi = preconjacobi,
+        preconilu = preconilu,
         preconmaxiter=3*size(A,2),
         preconrestart=size(A,2));
         
