@@ -367,20 +367,12 @@ function MPDirections!(barnoldi::BlockArnoldiDecomp, k::Int, Wspace)
    
     solves = 0
 
-    # support parallel precon solves for the LU case 
-    # iterative solvers are not thread-save yet
+    # parallel precon solves 
     # ! assumption: all preconditioners are of the same type 
-    if barnoldi.precons[1].method == LUFac
-        Threads.@threads for i=1:length(barnoldi.currentprecons)
-            index = barnoldi.currentprecons[i]
-            ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
-            solves += 1
-        end
-    else
-        for (i, index) in enumerate(barnoldi.currentprecons)
-            ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
-            solves += 1
-        end    
+    Threads.@threads for i=1:length(barnoldi.currentprecons)
+        index = barnoldi.currentprecons[i]
+        ldiv!(view(Wspace, :, i), barnoldi.precons[index], v)
+        solves += 1
     end
 
     # add the search directions to Z

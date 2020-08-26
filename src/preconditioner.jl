@@ -62,23 +62,31 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
         #T = typeof(one(eltype(A)) + one(eltype(preconshifts)) * one(eltype(M)))
         T = eltype(preconshifts[1] * M)
         m = size(M, 2)
-        x = zeros(T, m)
-        b = ones(T, m)
-        pl = Identity()
+        # pre-allocate local data to make 
+        # pc.methoddata thread-safe
+        x = Array{Any,1}(undef,npreconshifts)
+        b = Array{Any,1}(undef,npreconshifts)
+        pl = Array{Any,1}(undef,npreconshifts)
+        K = Array{Any,1}(undef,npreconshifts)
+        ml = Array{Any,1}(undef,npreconshifts)
+
         Threads.@threads for i=1:length(preconshifts)
-            K = A + preconshifts[i]*M
+            K[i] = A + preconshifts[i]*M
+            pl[i] = Identity()
             if AMG
-                K = Symmetric(sparse(K))
-                ml = ruge_stuben(K)
-                pl = aspreconditioner(ml)
+                K[i] = Symmetric(sparse(K[i]))
+                ml[i] = ruge_stuben(K[i])
+                pl[i] = aspreconditioner(ml[i])
             end
             if jacobi
-                pl = JacobiPreconditioner(K)
+                pl[i] = JacobiPreconditioner(K[i])
             end
             if iluprec
-                pl = ilu(K,τ=τ)
+                pl[i] = ilu(K[i],τ=τ)
             end
-            it = IterativeSolvers.gmres_iterable!(x, K, b, Pl = pl, maxiter=maxiter, restart=restart)
+            x[i] = zeros(T,m)
+            b[i] = ones(T,m)
+            it = IterativeSolvers.gmres_iterable!(x[i], K[i], b[i], Pl = pl[i], maxiter=maxiter, restart=restart)
             it.reltol = reltol
             precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it, tol = reltol)
         end
@@ -89,23 +97,30 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     if method == CG
         T = eltype(preconshifts[1] * M)
         m = size(M, 2)
-        x = zeros(T, m)
-        b = ones(T, m)
-        pl = Identity()
+        
+        x = Array{Any,1}(undef,npreconshifts)
+        b = Array{Any,1}(undef,npreconshifts)
+        pl = Array{Any,1}(undef,npreconshifts)
+        K = Array{Any,1}(undef,npreconshifts)
+        ml = Array{Any,1}(undef,npreconshifts)
+
         Threads.@threads for i=1:length(preconshifts)
-            K = A + preconshifts[i] * M
+            K[i] = A + preconshifts[i] * M
+            pl[i] = Identity()
             if AMG
-                K = Symmetric(sparse(K))
-                ml = ruge_stuben(K)
-                pl = aspreconditioner(ml)
+                K[i] = Symmetric(sparse(K[i]))
+                ml[i] = ruge_stuben(K[i])
+                pl[i] = aspreconditioner(ml[i])
             end
             if jacobi
-                pl = JacobiPreconditioner(K)
+                pl[i] = JacobiPreconditioner(K[i])
             end
             if iluprec
-                pl = ilu(K,τ=τ)
+                pl[i] = ilu(K[i],τ=τ)
             end
-            it = IterativeSolvers.cg_iterator!(x, K, b, pl, maxiter=maxiter)
+            x[i] = zeros(T,m)
+            b[i] = ones(T,m)
+            it = IterativeSolvers.cg_iterator!(x[i], K[i], b[i], pl[i], maxiter=maxiter)
             it.reltol = reltol
             precons[i] = SaIPreconditioner(preconshifts[i], CG, it, tol = reltol)
         end
@@ -116,10 +131,14 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     if method == GaussSeidel
         T = eltype(preconshifts[1] * M)
         m = size(M, 2)
-        x = zeros(T, m)
-        b = ones(T, m)
+        x = Array{Any,1}(undef,npreconshifts)
+        b = Array{Any,1}(undef,npreconshifts)
+        K = Array{Any,1}(undef,npreconshifts)
         Threads.@threads for i=1:length(preconshifts)
-            it = IterativeSolvers.DenseGaussSeidelIterable(A + preconshifts[i] * M, x, b, maxiter)
+            K[i] = A + preconshifts[i] * M
+            x[i] = zeros(T,m)
+            b[i] = ones(T,m)
+            it = IterativeSolvers.DenseGaussSeidelIterable(K[i], x[i], b[i], maxiter)
             precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = reltol)
         end
 
@@ -129,26 +148,32 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
     if method == BiCGStab
         T = eltype(preconshifts[1] * M)
         m = size(M, 2)
-        x = zeros(T, m)
-        b = ones(T, m)
-        pl = Identity()
+        
+        x = Array{Any,1}(undef,npreconshifts)
+        b = Array{Any,1}(undef,npreconshifts)
+        pl = Array{Any,1}(undef,npreconshifts)
+        K = Array{Any,1}(undef,npreconshifts)
+        ml = Array{Any,1}(undef,npreconshifts)
         Threads.@threads for i=1:length(preconshifts)
             # note: maxiter here takes the role of maximum matrix-vector products performed 
             # in the bicgstab algorithm as specified in IterativeSolvers
             # default: l=1 for standard BiCGStab
-            K = A + preconshifts[i] * M
+            K[i] = A + preconshifts[i] * M
+            pl[i] = Identity()
             if AMG 
-                K = Symmetric(sparse(K))
-                ml = ruge_stuben(K)
-                pl = aspreconditioner(ml)
+                K[i] = Symmetric(sparse(K[i]))
+                ml[i] = ruge_stuben(K[i])
+                pl[i] = aspreconditioner(ml[i])
             end
             if jacobi
-                pl = JacobiPreconditioner(K)
+                pl[i] = JacobiPreconditioner(K[i])
             end
             if iluprec
-                pl = ilu(K,τ=τ)
+                pl[i] = ilu(K[i],τ=τ)
             end
-            it = IterativeSolvers.bicgstabl_iterator!(x, K, b, 1, Pl = pl, max_mv_products=maxiter, tol=reltol)
+            x[i] = zeros(T,m)
+            b[i] = ones(T,m)
+            it = IterativeSolvers.bicgstabl_iterator!(x[i], K[i], b[i], 1, Pl = pl[i], max_mv_products=maxiter, tol=reltol)
             precons[i] = SaIPreconditioner(preconshifts[i], BiCGStab, it, tol = reltol)
         end
 
@@ -164,7 +189,7 @@ function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::
 end
 
 # !TODO: make ldiv! thread safe
-function ldiv!(y, pc::SaIPreconditioner, v)
+function ldiv!(y, pc::SaIPreconditioner, v; l::ReentrantLock=ReentrantLock())
     if pc.method == LUFac 
         # simply call the ldiv method for LU factorizations
         ldiv!(y, pc.methoddata, v)
