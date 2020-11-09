@@ -2,18 +2,17 @@ import LinearAlgebra.ldiv!
 using IterativeSolvers, LinearAlgebra, SparseArrays
 # name clash with GaussSeidel in PreconMethod: use needed methods directly
 using AlgebraicMultigrid: ruge_stuben, aspreconditioner
-using ExtendableSparse: JacobiPreconditioner
+using ExtendableSparse: JacobiPreconditioner, ExtendableSparseMatrix, flush!
 using IncompleteLU: ilu
 
 export PreconMethod, generate_preconditioners
 
 @enum PreconMethod begin
     LUFac = 1
-    CG = 2
-    GMRES = 3
-    GaussSeidel = 4
+    GaussSeidel = 2
+    CG = 3
+    GMRES = 4
     BiCGStab = 5
-    custom = 6
 end
 
 # generic shift and invert preconditioner data structure 
@@ -25,7 +24,7 @@ mutable struct SaIPreconditioner{shiftT, methoddataT, resT}
     # preconditioner solution method to be applied
     method::PreconMethod
     # solution method metadata prepared in advance such as
-    # LU factorizations or GMRES iterables
+    # LU factorizations or Krylov iterables
     methoddata::methoddataT
     tol::resT
 end
@@ -35,160 +34,217 @@ function SaIPreconditioner(shift::shiftT, method::PreconMethod, methoddata::meth
     return SaIPreconditioner(shift, method, methoddata, tol)
 end
 
+# AlgebraicMultigrid.jl currently does not support 
+# complex matrices! But in case it shall, the 
+# AMG machinery here already supports complex AMG construction.
+
+function constr_selfadjoint(K::AbstractArray{Tv} where {Tv<:Complex})
+    return Hermitian(K)
+end
+constr_selfadjoint(K::AbstractArray{Tv} where {Tv<:Real})=(return Symmetric(K))
+
+function amg_ruge_stuben(K::AbstractArray; kwargs...)
+    K = constr_selfadjoint(K)
+    ml = ruge_stuben(K; kwargs...)
+    return aspreconditioner(ml)
+end
+
+function amg_ruge_stuben(K::ExtendableSparseMatrix; kwargs...)
+    flush!(K)
+    mat = constr_selfadjoint(K.cscmatrix)
+    ml = ruge_stuben(mat; kwargs...)
+    return aspreconditioner(ml)
+end
+
+function jacobi_precon(K::AbstractSparseMatrix; kwargs...)
+    return JacobiPreconditioner(K)
+end
+
+function incomplete_lu(K::SparseMatrixCSC; kwargs...)
+    return ilu(K; kwargs...)
+end
+
+# generate the preconditioning shifts equidistantly log-spaced in the set of shifts
+function generate_preconshifts(shifts::Array{shiftT, 1}, npreconshifts) where shiftT 
+    # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
+    # shiftT's can be real or complex
+    # in the case of nprecons = 1, we simply take an average value
+    if shiftT <: Complex 
+        # extract the machine epsilon for the given shift datatype 
+        paramType = fieldtype(shiftT, 1)
+        ε = eps(paramType)
+    else
+        paramtype = shiftT
+        ε = eps(shiftT)
+    end
+
+    # shift real and imaginary parts (if nonempty) both by their minimum
+    # values to move the ranges above zero, sample equidistantly log-spaced 
+    # and then shift back into the the original range 
+    minshiftsIm = minimum(imag.(shifts))
+    maxshiftsIm = maximum(imag.(shifts))
+    minshiftsRe = minimum(real.(shifts))
+    maxshiftsRe = maximum(real.(shifts))
+
+    if npreconshifts > 1
+        biasIm = max(ε, abs(minshiftsIm))
+        biasRe = max(ε, abs(minshiftsRe))
+
+        if minshiftsIm == maxshiftsRe
+            preconshiftsIm = zeros(paramType, npreconshifts)
+        else
+            if minshiftsIm < 0 
+                preconshiftsIm = -2*abs(minshiftsIm) .+ (10.) .^ LinRange(log10(biasIm), log10(2*biasIm + maxshiftsIm), npreconshifts)
+            else
+                preconshiftsIm = (10.) .^ LinRange(log10(biasIm), log10(maxshiftsIm), npreconshifts)
+            end
+        end
+
+        if minshiftsRe == maxshiftsRe
+            preconshiftsRe = zeros(paramType, npreconshifts)
+        else
+            if minshiftsRe < 0
+                preconshiftsRe = -2*abs(minshiftsRe) .* (10.) .^ LinRange(log10(biasRe), log10(2*biasRe + maxshiftsRe), npreconshifts)
+            else
+                preconshiftsRe = (10.) .^ LinRange(log10(biasRe), log10(maxshiftsRe), npreconshifts) 
+            end
+        end
+
+        if shiftT <: Complex
+            preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
+        else
+            preconshifts = preconshiftsRe
+        end
+    else
+        meanRe = mean(real.(shifts))
+        meanIm = mean(imag.(shifts))
+        if shiftT <: Complex 
+            preconshifts = [meanRe + 1.0im * meanIm]
+        else
+            preconshifts = [meanRe]
+        end
+    end
+
+    return preconshifts
+end
+
+# ExtendableSparse does not provide a "+" for ExtendableSparseMatrices 
+# or "*" for ExtendableSparseMatrices and scalars returning 
+# a sparse structure (see https://github.com/j-fu/ExtendableSparse.jl/issues/7)
+function add_shift(A::ExtendableSparseMatrix{Tv,Ti},M::ExtendableSparseMatrix{Tv,Ti},σ::Number) where {Tv,Ti<:Integer}
+    @inbounds flush!(A)
+    @inbounds flush!(M)
+    return A.cscmatrix + σ * M.cscmatrix
+end
+
+function add_shift(A,M,σ)
+    return A + σ * M
+end
+
 # generate preconditioners given A,M and preconditioning shifts to provide 
 # preconitioning solves of the desired type
-function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1}, method::PreconMethod; 
-    maxiter = size(A,2),
-    restart = min(20, size(A,2)),
-    AMG = false, # flag to provide AMG precon for Krylov methods
-    jacobi=false, # flag to provide jacobi precon for Krylov methods
-    iluprec=false, # flag to provide ILU precon for Krylov methods 
-    τ=0.1, # drop threshold parameter for IncompleteLU.ilu call
-    reltol = sqrt(eps(real(eltype(A))))) where shiftT
+function generate_preconditioners(A, M, preconshifts::Array{shiftT, 1},
+    preconmethod::PreconMethod, 
+    preconpreconmethod; 
+    preconreltol = sqrt(eps(real(eltype(A)))),
+    preconmaxiter = size(A,2),
+    preconrestart = min(20, size(A,2)),
+    kwargs... # arguments provided to preconpreconmethod
+    ) where shiftT
     
     npreconshifts = length(preconshifts)
     precons = Array{SaIPreconditioner}(undef, npreconshifts)
 
-    if method == LUFac
+    preconpreconsupplied = false
+    if !isnothing(preconpreconmethod)
+        preconpreconsupplied = true
+    end
+
+    # assume preconditioners map from the eltype of (A+shift.*M) to the same type
+    T = eltype(preconshifts[1] * M)
+    m = size(M, 2)
+    # pre-allocate local data to make 
+    # pc.methoddata thread-safe
+    x = Array{Any,1}(undef,npreconshifts)
+    b = Array{Any,1}(undef,npreconshifts)
+    pl = Array{Any,1}(undef,npreconshifts)
+    K = Array{Any,1}(undef,npreconshifts)
+
+    if preconmethod == LUFac
         Threads.@threads for i=1:length(preconshifts)
-            precons[i] = SaIPreconditioner(preconshifts[i], LUFac, lu(A + preconshifts[i] * M))
-            #println("\t set up precon $i on thread $(Threads.threadid())")
+            K[i] = add_shift(A,M,preconshifts[i])
+            precons[i] = SaIPreconditioner(preconshifts[i], LUFac, lu(K[i]))
         end
         return precons
     end
     
-    if method == GMRES
-        # assume preconditioners map from the eltype of (A+shift.*M) to the same type
-        #T = typeof(one(eltype(A)) + one(eltype(preconshifts)) * one(eltype(M)))
-        T = eltype(preconshifts[1] * M)
-        m = size(M, 2)
-        # pre-allocate local data to make 
-        # pc.methoddata thread-safe
-        x = Array{Any,1}(undef,npreconshifts)
-        b = Array{Any,1}(undef,npreconshifts)
-        pl = Array{Any,1}(undef,npreconshifts)
-        K = Array{Any,1}(undef,npreconshifts)
-        ml = Array{Any,1}(undef,npreconshifts)
-
+    if preconmethod == GMRES
         Threads.@threads for i=1:length(preconshifts)
-            K[i] = A + preconshifts[i]*M
+            K[i] = add_shift(A,M,preconshifts[i])
+
             pl[i] = Identity()
-            if AMG
-                K[i] = Symmetric(sparse(K[i]))
-                ml[i] = ruge_stuben(K[i])
-                pl[i] = aspreconditioner(ml[i])
-            end
-            if jacobi
-                pl[i] = JacobiPreconditioner(K[i])
-            end
-            if iluprec
-                pl[i] = ilu(K[i],τ=τ)
+            if preconpreconsupplied 
+                pl[i] = preconpreconmethod(K[i]; kwargs...)
             end
             x[i] = zeros(T,m)
             b[i] = ones(T,m)
-            it = IterativeSolvers.gmres_iterable!(x[i], K[i], b[i], Pl = pl[i], maxiter=maxiter, restart=restart)
-            it.reltol = reltol
-            precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it, tol = reltol)
+            it = IterativeSolvers.gmres_iterable!(x[i], K[i], b[i], Pl = pl[i], maxiter=preconmaxiter, restart=preconrestart)
+            it.reltol = preconreltol
+            precons[i] = SaIPreconditioner(preconshifts[i], GMRES, it, tol = preconreltol)
         end
 
         return precons
     end
 
-    if method == CG
-        T = eltype(preconshifts[1] * M)
-        m = size(M, 2)
-        
-        x = Array{Any,1}(undef,npreconshifts)
-        b = Array{Any,1}(undef,npreconshifts)
-        pl = Array{Any,1}(undef,npreconshifts)
-        K = Array{Any,1}(undef,npreconshifts)
-        ml = Array{Any,1}(undef,npreconshifts)
-
+    if preconmethod == CG
         Threads.@threads for i=1:length(preconshifts)
-            K[i] = A + preconshifts[i] * M
-            pl[i] = Identity()
-            if AMG
-                K[i] = Symmetric(sparse(K[i]))
-                ml[i] = ruge_stuben(K[i])
-                pl[i] = aspreconditioner(ml[i])
-            end
-            if jacobi
-                pl[i] = JacobiPreconditioner(K[i])
-            end
-            if iluprec
-                pl[i] = ilu(K[i],τ=τ)
+            K[i] = add_shift(A,M,preconshifts[i])
+            pl[i] = Identity()            
+            if preconpreconsupplied 
+                pl[i] = preconpreconmethod(K[i]; kwargs...)
             end
             x[i] = zeros(T,m)
             b[i] = ones(T,m)
-            it = IterativeSolvers.cg_iterator!(x[i], K[i], b[i], pl[i], maxiter=maxiter)
-            it.reltol = reltol
-            precons[i] = SaIPreconditioner(preconshifts[i], CG, it, tol = reltol)
+            it = IterativeSolvers.cg_iterator!(x[i], K[i], b[i], pl[i], maxiter=preconmaxiter)
+            it.reltol = preconreltol
+            precons[i] = SaIPreconditioner(preconshifts[i], CG, it, tol = preconreltol)
         end
 
         return precons
     end
 
-    if method == GaussSeidel
-        T = eltype(preconshifts[1] * M)
-        m = size(M, 2)
-        x = Array{Any,1}(undef,npreconshifts)
-        b = Array{Any,1}(undef,npreconshifts)
-        K = Array{Any,1}(undef,npreconshifts)
+    if preconmethod == GaussSeidel
         Threads.@threads for i=1:length(preconshifts)
-            K[i] = A + preconshifts[i] * M
+            K[i] = add_shift(A,M,preconshifts[i])
             x[i] = zeros(T,m)
             b[i] = ones(T,m)
-            it = IterativeSolvers.DenseGaussSeidelIterable(K[i], x[i], b[i], maxiter)
-            precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = reltol)
+            it = IterativeSolvers.DenseGaussSeidelIterable(K[i], x[i], b[i], preconmaxiter)
+            precons[i] = SaIPreconditioner(preconshifts[i], GaussSeidel, it, tol = preconreltol)
         end
 
         return precons
     end
 
-    if method == BiCGStab
-        T = eltype(preconshifts[1] * M)
-        m = size(M, 2)
-        
-        x = Array{Any,1}(undef,npreconshifts)
-        b = Array{Any,1}(undef,npreconshifts)
-        pl = Array{Any,1}(undef,npreconshifts)
-        K = Array{Any,1}(undef,npreconshifts)
-        ml = Array{Any,1}(undef,npreconshifts)
+    if preconmethod == BiCGStab
         Threads.@threads for i=1:length(preconshifts)
             # note: maxiter here takes the role of maximum matrix-vector products performed 
             # in the bicgstab algorithm as specified in IterativeSolvers
             # default: l=1 for standard BiCGStab
-            K[i] = A + preconshifts[i] * M
+            K[i] = add_shift(A,M,preconshifts[i])
             pl[i] = Identity()
-            if AMG 
-                K[i] = Symmetric(sparse(K[i]))
-                ml[i] = ruge_stuben(K[i])
-                pl[i] = aspreconditioner(ml[i])
-            end
-            if jacobi
-                pl[i] = JacobiPreconditioner(K[i])
-            end
-            if iluprec
-                pl[i] = ilu(K[i],τ=τ)
+            if preconpreconsupplied 
+                pl[i] = preconpreconmethod(K[i]; kwargs...)
             end
             x[i] = zeros(T,m)
             b[i] = ones(T,m)
-            it = IterativeSolvers.bicgstabl_iterator!(x[i], K[i], b[i], 1, Pl = pl[i], max_mv_products=maxiter, tol=reltol)
-            precons[i] = SaIPreconditioner(preconshifts[i], BiCGStab, it, tol = reltol)
+            it = IterativeSolvers.bicgstabl_iterator!(x[i], K[i], b[i], 1, Pl = pl[i], max_mv_products=preconmaxiter, tol=preconreltol)
+            precons[i] = SaIPreconditioner(preconshifts[i], BiCGStab, it, tol = preconreltol)
         end
 
-        return precons
-    end
-
-    if method == custom 
-        for (i,v) in enumerate(preconshifts)
-            precons[i] = SaIPreconditioner(preconshifts[i], custom, nothing)
-        end
         return precons
     end
 end
 
-# !TODO: make ldiv! thread safe
 function ldiv!(y, pc::SaIPreconditioner, v; l::ReentrantLock=ReentrantLock())
     if pc.method == LUFac 
         # simply call the ldiv method for LU factorizations
@@ -208,13 +264,9 @@ function ldiv!(y, pc::SaIPreconditioner, v; l::ReentrantLock=ReentrantLock())
         IterativeSolvers.init_residual!(pc.methoddata.residual, pc.methoddata.residual.current)
         pc.methoddata.reltol = pc.tol * pc.methoddata.residual.current
         # perform the iteration
-        #println("\t precon solve: ")
-        #j = 1
         for (it,res) in enumerate(pc.methoddata)
-        #    println("\t it, res: ", it, ", ", res)
-        #    j = j+1
+
         end
-        #println("\t took ",j," iterations")
         # copy the solution to y
         copyto!(y, pc.methoddata.x)
     end
@@ -235,45 +287,26 @@ function ldiv!(y, pc::SaIPreconditioner, v; l::ReentrantLock=ReentrantLock())
         pc.methoddata.residual = norm(pc.methoddata.r)
         pc.methoddata.reltol = pc.tol * pc.methoddata.residual
 
-        #j = 1
-        #println("\t\t thread: $(Threads.threadid())")
-        #println("\t precon solve:")
         for (it,res) in enumerate(pc.methoddata)
-            #println("\t\t thread: $(Threads.threadid())")
-            #println("\t it, res: ", it, ", ", res)
-            #j = j+1
+            
         end
-        #println("\t\t thread: $(Threads.threadid())")
-        #println("\t took ", j, " iterations")
         copyto!(y, pc.methoddata.x)
-
-        return 0
     end
 
     if pc.method == GaussSeidel
         copyto!(pc.methoddata.x, y)
         copyto!(pc.methoddata.b, v)
         
-        #println("\t precon solve:")
-        #j = 1
         for (i, nothing) in enumerate(pc.methoddata)
             if norm(pc.methoddata.b - pc.methoddata.A * pc.methoddata.x) < pc.tol * norm(pc.methoddata.b)
                 break
             end
-            #println("\t res: ", norm(pc.methoddata.b - pc.methoddata.A * pc.methoddata.x))
-            #j = j+1
         end
-        #println("\t took ", j, " iterations")
 
         copyto!(y, pc.methoddata.x)
     end
 
-    if pc.method == BiCGStab
-        # the setup of all internal structures is done in 
-        # the iterator constructor
-        #pc.methoddata = IterativeSolvers.bicgstabl_iterator!(y, pc.methoddata.A, v, 2,
-        #max_mv_products = pc.methoddata.max_mv_products, tol = pc.methoddata.reltol)
-        
+    if pc.method == BiCGStab        
         T = eltype(pc.methoddata.x)
         n = size(pc.methoddata.A, 1)
         l = pc.methoddata.l
@@ -302,19 +335,10 @@ function ldiv!(y, pc::SaIPreconditioner, v; l::ReentrantLock=ReentrantLock())
 
         pc.methoddata.reltol = pc.tol * pc.methoddata.residual
         
-        #println(" \t precon solve:")
-        #j = 1
         for (it, nothing) in enumerate(pc.methoddata)
-            #j = j+1
-            #println("\t res: ", pc.methoddata.residual)
-        end
 
-        #println(" \t took ", j, " iterations")
+        end
         
         copyto!(y, pc.methoddata.x)
-    end
-
-    if pc.method == custom
-        error("custom preconditioning solve requires custom ldiv! method!")
     end
 end

@@ -22,6 +22,8 @@ n = 100
 # test FGMRESSh with 3 preconditioners
 # on dense matrices, sparse matrices and LinearMaps
 # for all preconditioning solve methods
+# without supplying an additional preconditioner for the 
+# precon solves
 
 println("Running FGMRESSh test for dense matrices...")
 @testset "Matrix{$T}" for T in (Float32, Float64)
@@ -137,8 +139,33 @@ println("Running FGMRESSh AMG test for sparse matrices...")
         x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
+        preconpreconmethod=amg_ruge_stuben,
         preconreltol=preconreltol,
-        preconAMG = true,
+        preconmaxiter=3*size(A,2),
+        preconrestart=size(A,2));
+        
+        @test maximum(test_residual(it)) / norm(b) < it.btol;
+    end;
+end;
+
+println("Running FGMRESSh AMG test for ExtendableSparse matrices...")
+@testset "AMG Test for Sparse{$T}" for T in (Float32, Float64)
+    @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.CG,MPGMRESSh.BiCGStab)
+        preconvals = 3
+        # use Poisson test matrix for tests since it is SPD and diagonally dominant
+        A = ExtendableSparseMatrix(poisson(T,n))
+        M = ExtendableSparseMatrix(sparse(diagm(ones(T,n))))
+        shifts = vcat(1e-3 .* collect(1:40), 1.4 .+ 1e-3 .* collect(1:40))
+        b = ones(T,n)
+        
+        maxiter = n
+        preconreltol = 1.0e-17
+        
+        x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
+        maxiter=maxiter, log = true, verbose = false,
+        btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
+        preconpreconmethod=amg_ruge_stuben,
+        preconreltol=preconreltol,
         preconmaxiter=3*size(A,2),
         preconrestart=size(A,2));
         
@@ -149,7 +176,7 @@ end;
 # test FGMRESSh with Jacobi and ILU preconditioners for 
 # GMRES and BiCGStab preconditioner solves 
 println("Running FGMRESSh Jacobi & ILU test for sparse matrices...")
-@testset "FGMRESSh test for $preconditioner as Krylov preconditioner" for preconditioner in (Jacobi, ILU)
+@testset "FGMRESSh test for $preconprecon as Krylov preconditioner" for preconprecon in (jacobi_precon, incomplete_lu)
     @testset "preconmethod = $preconmethod" for preconmethod in (MPGMRESSh.GMRES,MPGMRESSh.BiCGStab)
         preconvals = 3
         # use Poisson test matrix for tests since it is SPD and diagonally dominant
@@ -161,21 +188,11 @@ println("Running FGMRESSh Jacobi & ILU test for sparse matrices...")
         maxiter = n
         preconreltol = 1.0e-17
 
-        preconjacobi = false
-        preconilu = false
-
-        if preconditioner == Jacobi
-            preconjacobi = true 
-        else
-            preconilu = true
-        end
-
         x,it,his = MPGMRESSh.fgmressh(b, A, M, shifts, preconvals=preconvals, 
         maxiter=maxiter, log = true, verbose = false,
         btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
+        preconpreconmethod=preconprecon,
         preconreltol=preconreltol,
-        preconjacobi = preconjacobi,
-        preconilu = preconilu,
         preconmaxiter=3*size(A,2),
         preconrestart=size(A,2));
         
@@ -202,7 +219,6 @@ println("Running FGMRESSh Arnoldi decomposition test for sparse matrices...")
     maxiter=maxiter, log = true, verbose = false,
     btol=1.0e-10, convergence=MPGMRESSh.standard, preconmethod=preconmethod,
     preconreltol=preconreltol,
-    preconAMG = true,
     preconmaxiter=3*size(A,2),
     preconrestart=size(A,2));
 

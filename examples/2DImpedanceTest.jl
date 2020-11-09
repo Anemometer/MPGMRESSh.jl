@@ -52,7 +52,11 @@ function generate_refined_triangle_input(;L=1.0, h = 1.0, minangle = 20, maxarea
 end
 
 
-function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecons=3, preconmethod = MPGMRESSh.LUFac, maxiter=20, preconreltol = 1.0e-10, Plotter=nothing, trisurf=false, animate = false)
+function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecons=3, preconmethod = MPGMRESSh.LUFac, maxiter=20,
+    preconreltol = 1.0e-10, Plotter=nothing, trisurf=false, animate = false,
+    R=10,
+    C=2,
+    D=1)
 
     if regular 
         # create regular grid with squares as cells
@@ -80,25 +84,22 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
         grid=VoronoiFVM.Grid(switches, triin)
     end
     #VoronoiFVM.plot(Plotter, grid)
-    """
+    
     if(Plotter != nothing)
         p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
-        #display(p)
+        display(p)
         if VoronoiFVM.ispyplot(Plotter)
             Plotter.savefig("grid.svg")
         else
             Plotter.svg(p,"grid.svg")
         end
     end
-    """
-    @printf("Press ENTER to continue...")
-    readline();
 
     # Create and fill data 
     data=Data()
-    data.R=10
-    data.D=1
-    data.C=2
+    data.R=R
+    data.D=D
+    data.C=C
 
     # Declare constitutive functions
     flux=function(f,u,edge,data)
@@ -162,9 +163,6 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
             end
         end
     end
-
-    @printf("Press ENTER to continue...")
-    readline()
 
     # Create Impedance system from steady state
     excited_spec=1
@@ -265,20 +263,7 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     # each index corresponding to the respective shift iω
     iωs = 1.0im .* allomega
 
-    # jacobi preconditioning combats numerical inflation of errors
-    # in the absolute residual
-    K = sparse(sys.matrix)
-    M = deepcopy(isys.storderiv)
-    b = deepcopy(isys.F.node_dof)
-    jac = diag(K)
-    
-    for (i, el) in enumerate(jac)
-        K[i, :] .*= 1/el
-        M[i, :] .*= 1/el
-        b[i] *= 1/el
-    end
-
-    @printf("MPGMRESSh solution without preconditioning: \n")
+    @printf("MPGMRESSh solution: \n")
     # -rhs F needs reshaping into a column vector
     # -we need to make convergence decisions based on the absolute residual 
     #  due to the penalty factor on the rhs which fools the method into 
@@ -312,34 +297,6 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
     maxnormILs = maximum(abs.(allIL - allILMPGMRES))
     @printf("Maximum linf norm of resulting measurements: %1.20e\n\n", maxnormILs)
 
-    @printf("----------------------------------------------------------------\n\n")
-
-    @printf("MPGMRESSh solution with preconditioning: \n")
-    # the jacobi preconditioning allows us to iterate normally with respect to the 
-    # relative residual (Convergence.standard)
-    UZω, it_mpgmresshprecon = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = nprecons, maxiter = maxiter,
-                                log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.standard, preconmethod = preconmethod,
-                                preconreltol = preconreltol)
-    # preconditioner solution method: LU factorization
-
-    # now calculate the associated measurements for the jacobi-preconditioned system
-    allILMPGMRES = zeros(Complex{Float64}, length(allIL))
-    for (i, iω) in enumerate(iωs)
-        allILMPGMRES[i] = (dmeas_stdy*values(UZω[i]))[1] + iω * (dmeas_tran*values(UZω[i]))[1]
-    end
-
-    # the rescaling by the jacobi preconditioner has taken care of the excessive absolute residuals
-    # in our case, they are of course now identical to the relative residuals
-    absres = [norm(it_mpgmresshprecon.b - (it_mpgmresshprecon.barnoldi.A + shift .* it_mpgmresshprecon.barnoldi.M) * it_mpgmresshprecon.x[i]) for (i, shift) in enumerate(it_mpgmresshprecon.barnoldi.allshifts)]
-    @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
-    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmresshprecon.residual.β))
-
-    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmresshprecon.x[i])) for i=1:length(it_mpgmresshprecon.barnoldi.allshifts)])
-    @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
-    maxnormILs = maximum(abs.(allIL - allILMPGMRES))
-    @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
-
     # ----------------------------------------------------------------
     
     if VoronoiFVM.isplots(Plotter)
@@ -350,21 +307,17 @@ function main(;regular = false, L=1.0, h=1.0, maxarea=0.01, dense=false, nprecon
         p=Plotter.plot(grid=true)
         #Plotter.plot!(p,real(allIL),imag(allIL),label="calc")
         #Plotter.plot!(p,real(allIL),imag(allIL),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
-        Plotter.plot!(p,real(allILMPGMRES),imag(allILMPGMRES),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
+        Plotter.plot!(p,real(allILMPGMRES),imag(allILMPGMRES),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"), lw=2)
+        Plotter.xlabel!(LaTeXString("\$\\mathrm{Re}(\\widetilde{I}_{\\alpha}^{a})\$"))
+        Plotter.ylabel!(LaTeXString("\$\\mathrm{Im}(\\widetilde{I}_{\\alpha}^{a})\$"))
 
         #Plotter.gui(p)
-        #display(p)
+        display(p)
         Plotter.svg(p,"impedance.svg")
     end
 
-    return sys, isys, allIL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprecon;
-    #return steadystate, sys;
+    return sys, isys, allIL, allILMPGMRES, allUZ, UZω, it_mpgmressh;
 end
-
-#function test()
-#    main(dense=true) ≈ 0.23106605162049176 &&  main(dense=false) ≈ 0.23106605162049176
-#end
-
 
 end
 

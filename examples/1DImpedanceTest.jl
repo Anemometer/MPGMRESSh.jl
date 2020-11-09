@@ -1,5 +1,6 @@
 # # 150: Impedance calculation
-# ([source code](SOURCE_URL))
+#  taken from https://github.com/j-fu/VoronoiFVM.jl/blob/master/examples/Example150_Impedance1D.jl
+#  and modified to showcase MPGMRESSh.jl application
 #
 #  Impedance calculation for 
 #
@@ -43,7 +44,10 @@ mutable struct Data  <: VoronoiFVM.AbstractData
 end
 
 
-function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, preconreltol = 1.0e-10, regular = false, Plotter=nothing, verbose=false, dense=false, animate=false)
+function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 20, preconreltol = 1.0e-10, regular = false, Plotter=nothing, verbose=false, dense=false, animate=false,
+    R=1,
+    D=1,
+    C=2)
 
     L=1.0
 
@@ -56,54 +60,16 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
         X=collect(range(0.,stop=L,length=nref))
     end
 
-    # Create discretitzation grid
+    # Create and plot discretitzation grid
     grid=VoronoiFVM.Grid(X)
-
-    if Plotter != nothing
-        # https://github.com/j-fu/ExtendableGrids.jl/issues/1
-        #p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter, show = true)
-        
-        p = Plotter.plot()
-        
-        cellregions=grid[VoronoiFVM.CellRegions]
-        cellnodes=grid[VoronoiFVM.CellNodes]
-        coord=grid[VoronoiFVM.Coordinates]
-        ncellregions=grid[VoronoiFVM.NumCellRegions]
-        bfacenodes=grid[VoronoiFVM.BFaceNodes]
-        bfaceregions=grid[VoronoiFVM.BFaceRegions]
-        nbfaceregions=grid[VoronoiFVM.NumBFaceRegions]
-
-        xmin=minimum(coord)
-        xmax=maximum(coord)
-        h=(xmax-xmin)/20.0
-        
-        for icell=1:VoronoiFVM.num_cells(grid)
-            rgb=VoronoiFVM.ExtendableGrids.frgb(Plotter,cellregions[icell],ncellregions)
-            x1 = coord[cellnodes[1,icell]]
-            x2 = coord[cellnodes[2,icell]]
-            Plotter.plot!(p,[x1,x1],[-h,h],linewidth=0.5,color=:black,label="")
-            Plotter.plot!(p,[x2,x2],[-h,h],linewidth=0.5,color=:black,label="")
-            Plotter.plot!(p,[x1,x2],[0,0],linewidth=3.0,color=rgb,label="")
-        end
-        
-        for ibface=1:VoronoiFVM.num_bfaces(grid)
-            if bfaceregions[ibface]>0
-                rgb=VoronoiFVM.ExtendableGrids.frgb(Plotter,bfaceregions[ibface],nbfaceregions)
-                x1 = coord[bfacenodes[1,ibface]]
-                Plotter.plot!(p,[x1,x1],[-2*h,2*h],linewidth=3.0,color=rgb,label="")
-            end
-        end
-
-        Plotter.svg(p, "grid.svg")     
-        display(p)
-        
-    end
+    p = VoronoiFVM.ExtendableGrids.plot(grid, Plotter=Plotter)
+    display(p)
 
     # Create and fill data 
     data=Data()
-    data.R=1
-    data.D=1
-    data.C=2
+    data.R=R
+    data.D=D
+    data.C=C
 
     # Declare constitutive functions
     flux=function(f,u,edge,data)
@@ -156,7 +122,6 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
     if Plotter!=nothing
         p = VoronoiFVM.ExtendableGrids.plot(grid,steadystate[1,:], Plotter=Plotter)
         display(p)
-        Plotter.svg(p,"steadystate.svg")
     end
 
     # define the measure functionals for measuring the terminal contact current
@@ -221,10 +186,6 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
 
         # add real part of computed solution to animation frame 
         if isplots(Plotter) && animate
-            #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label=LaTeXString("\$\\Re(u_a), \\; \\omega = "*string(ω))*"\$")
-            #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label=LaTeXString("\$\\Im(u_a), \\; \\omega = "*string(ω))*"\$")
-            #p1 = VoronoiFVM.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
-            #p2 = VoronoiFVM.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
             p1 = VoronoiFVM.ExtendableGrids.plot(Plotter, grid, real(UZ[1,:]), show=false, color=(1,0,0), label="Re(u_a)")
             p2 = VoronoiFVM.ExtendableGrids.plot(Plotter, grid, imag(UZ[1,:]), show=false, color=(0,0,1), label="Im(u_a)")
             Plotter.plot(p1,p2,layout = (2,1))
@@ -260,27 +221,11 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
     # each index corresponding to the respective shift iω
     iωs = 1.0im .* allomega
 
-    # jacobi preconditioning combats numerical inflation of errors
-    # in the absolute residual
-    K = sparse(sys.matrix)
-    M = deepcopy(isys.storderiv)
-    b = deepcopy(isys.F.node_dof)
-    jac = diag(K)
-    
-    for (i, el) in enumerate(jac)
-        K[i, :] .*= 1/el
-        M[i, :] .*= 1/el
-        b[i] *= 1/el
-    end
-
     @printf("MPGMRESSh solution without preconditioning: \n")
     # -rhs F needs reshaping into a column vector
     # -we need to make convergence decisions based on the absolute residual 
     #  due to the penalty factor on the rhs which fools the method into 
     #  instantaneous convergence after one iteration if relative residuals are used
-    #
-    # however, the implemented Ayachour residual update helps cancel out this problem
-    # since it scales with the penalty parameter in its numerator and denominator equally
     UZω, it_mpgmressh = MPGMRESSh.mpgmressh(reshape(isys.F, (size(isys.F)[2],)), sys.matrix, isys.storderiv, iωs, nprecons = nprecons, maxiter = maxiter,
                                 log = true, verbose = true, btol=1.0e-10,
                                 convergence = MPGMRESSh.absolute, preconmethod = preconmethod,
@@ -297,38 +242,12 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
     @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
     @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmressh.residual.β))
 
+    # checking the errors in the actual solution vectors and 
+    # associated measurements
     maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmressh.x[i])) for i=1:length(it_mpgmressh.barnoldi.allshifts)])
     @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
     maxnormILs = maximum(abs.(allIL - allILMPGMRES))
     @printf("Maximum linf norm of resulting measurements: %1.20e\n\n", maxnormILs)
-
-    @printf("----------------------------------------------------------------\n\n")
-
-    @printf("MPGMRESSh solution with preconditioning: \n")
-    # the jacobi preconditioning allows us to iterate normally with respect to the 
-    # relative residual (Convergence.standard)
-    UZω, it_mpgmresshprec = MPGMRESSh.mpgmressh(reshape(b, (size(b)[2],)), K, M, iωs, nprecons = nprecons, maxiter = maxiter,
-                                log = true, verbose = true, btol=1.0e-10,
-                                convergence = MPGMRESSh.standard, preconmethod = preconmethod,
-                                preconreltol = 1.0e-16,
-                                preconmaxiter = 1000)
-
-    # now calculate the associated measurements for the jacobi-preconditioned system
-    allILMPGMRES = zeros(Complex{Float64}, length(allIL))
-    for (i, iω) in enumerate(iωs)
-        allILMPGMRES[i] = (dmeas_stdy*values(UZω[i]))[1] + iω * (dmeas_tran*values(UZω[i]))[1]
-    end
-
-    # the rescaling by the jacobi preconditioner has taken care of the excessive absolute residuals
-    # in our case, they are of course now identical to the relative residuals
-    absres = [norm(it_mpgmresshprec.b - (it_mpgmresshprec.barnoldi.A + shift .* it_mpgmresshprec.barnoldi.M) * it_mpgmresshprec.x[i]) for (i, shift) in enumerate(it_mpgmresshprec.barnoldi.allshifts)]
-    @printf("Maximal absolute residual across shifts: %1.5e\n", maximum(absres))
-    @printf("Maximal relative residual across shifts: %1.5e\n\n", maximum(absres ./ it_mpgmresshprec.residual.β))
-
-    maxnormSols = maximum([maximum(abs.(allUZ[:,i] - it_mpgmresshprec.x[i])) for i=1:length(it_mpgmresshprec.barnoldi.allshifts)])
-    @printf("Maximum linf norm of MPGMRESSh and direct solutions: %1.20e\n", maxnormSols)
-    maxnormILs = maximum(abs.(allIL - allILMPGMRES))
-    @printf("Maximum linf norm of resulting measurements: %1.20e\n", maxnormILs)
 
     # ----------------------------------------------------------------
     
@@ -338,18 +257,16 @@ function main(;nref=0, preconmethod = MPGMRESSh.LUFac, nprecons = 3, maxiter = 2
         end
 
         p=Plotter.plot(grid=true)
-        #Plotter.plot!(p,real(allIL),imag(allIL),label="approximated")
-        Plotter.plot!(p,real(allIL),imag(allIL),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"))
-        #Plotter.plot!(p,real(allIxL),imag(allIxL),label="exact")
-        Plotter.plot!(p,real(allIxL),imag(allIxL),label=LaTeXString("exact (\$I_{\\alpha}^{a}\$)"))
+        
+        Plotter.plot!(p,real(allIxL),imag(allIxL),label=LaTeXString("exact (\$I_{\\alpha}^{a}\$)"),lw=2)
+        Plotter.plot!(p,real(allILMPGMRES),imag(allILMPGMRES),label=LaTeXString("approximated (\$\\widetilde{I}_{\\alpha}^{a}\$)"),lw=0, marker=:rect)
+        Plotter.xlabel!(LaTeXString("\$\\mathrm{Re}(\\widetilde{I}_{\\alpha}^{a})\$"))
+        Plotter.ylabel!(LaTeXString("\$\\mathrm{Im}(\\widetilde{I}_{\\alpha}^{a})\$"))
 
-        #Plotter.gui(p)
         display(p)
-
-        Plotter.svg(p,"impedance.svg")
     end
 
-    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh, it_mpgmresshprec;
+    return sys, isys, allIL, allIxL, allILMPGMRES, allUZ, UZω, it_mpgmressh;
 end
 
 function test()

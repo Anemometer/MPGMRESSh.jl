@@ -7,7 +7,6 @@ include("preconditioner.jl")
 
 # This code draws heavily from the style already adopted for gmres.jl of IterativeSolvers.jl.
 
-# !TODO: make BlockArnoldi immutable by making BlockArnoldiStep work index-bound in-place
 mutable struct BlockArnoldiDecomp{elT, opA, opM, shiftT, precT}
     A::opA # (finite-dimensional) linear operator A
     M::opM
@@ -175,70 +174,6 @@ function init!(barnoldi::BlockArnoldiDecomp{T}, b, residual::Residual) where T
     return β
 end
 
-# generate the preconditioning shifts equidistantly log-spaced in the set of shifts
-function generate_preconshifts(shifts::Array{shiftT, 1}, npreconshifts) where shiftT 
-    # sample nprecons many shifts evenly spaced on a log scale of the range of shifts
-    # shiftT's can be real or complex
-    # in the case of nprecons = 1, we simply take an average value
-    if shiftT <: Complex 
-        # extract the machine epsilon for the given shift datatype 
-        paramType = fieldtype(shiftT, 1)
-        ε = eps(paramType)
-    else
-        paramtype = shiftT
-        ε = eps(shiftT)
-    end
-
-    # shift real and imaginary parts (if nonempty) both by their minimum
-    # values to move the ranges above zero, sample equidistantly log-spaced 
-    # and then shift back into the the original range 
-    minshiftsIm = minimum(imag.(shifts))
-    maxshiftsIm = maximum(imag.(shifts))
-    minshiftsRe = minimum(real.(shifts))
-    maxshiftsRe = maximum(real.(shifts))
-
-    if npreconshifts > 1
-        biasIm = max(ε, abs(minshiftsIm))
-        biasRe = max(ε, abs(minshiftsRe))
-
-        if minshiftsIm == maxshiftsRe
-            preconshiftsIm = zeros(paramType, npreconshifts)
-        else
-            if minshiftsIm < 0 
-                preconshiftsIm = -2*abs(minshiftsIm) .+ (10.) .^ LinRange(log10(biasIm), log10(2*biasIm + maxshiftsIm), npreconshifts)
-            else
-                preconshiftsIm = (10.) .^ LinRange(log10(biasIm), log10(maxshiftsIm), npreconshifts)
-            end
-        end
-
-        if minshiftsRe == maxshiftsRe
-            preconshiftsRe = zeros(paramType, npreconshifts)
-        else
-            if minshiftsRe < 0
-                preconshiftsRe = -2*abs(minshiftsRe) .* (10.) .^ LinRange(log10(biasRe), log10(2*biasRe + maxshiftsRe), npreconshifts)
-            else
-                preconshiftsRe = (10.) .^ LinRange(log10(biasRe), log10(maxshiftsRe), npreconshifts) 
-            end
-        end
-
-        if shiftT <: Complex
-            preconshifts = preconshiftsRe + 1.0im .* preconshiftsIm
-        else
-            preconshifts = preconshiftsRe
-        end
-    else
-        meanRe = mean(real.(shifts))
-        meanIm = mean(imag.(shifts))
-        if shiftT <: Complex 
-            preconshifts = [meanRe + 1.0im * meanIm]
-        else
-            preconshifts = [meanRe]
-        end
-    end
-
-    return preconshifts
-end
-
 start(::MPGMRESShIterable) = 0
 
 function converged(gsh::MPGMRESShIterable) 
@@ -383,7 +318,7 @@ end
 
 function init_residual!(r::Residual{elT, resT}, β) where {elT, resT}
     r.accumulator = zeros(elT, size(r.accumulator))
-    view(r.accumulator, 1, :) .= β * one(resT)
+    view(r.accumulator, 1, :) .= one(resT)
     r.β = β
 end
 
@@ -453,8 +388,6 @@ function mpgmressh(b, A, M, shifts; kwargs...)
     # use the appropriate divtype for M
     T = typeof(one(eltype(b))/(one(eltype(shifts)) * one(eltype(M))))
 
-    # !TODO implement sanity checks for proper 
-    # dimensionality of b, A, M    
     x = [similar(b, T)]
     fill!(x[1], zero(T))
     for k=2:length(shifts)
@@ -468,6 +401,10 @@ end
 
 function mpgmressh!(x, b, A, M, shifts;
     nprecons = 3,
+    precons = nothing,
+    preconshifts = nothing,
+    preconmethod = LUFac,
+    preconpreconmethod = nothing, # precon function for precon solves
     btol = sqrt(eps(real(eltype(b)))),
     atol = btol,
     maxiter::Int = size(M,2),
@@ -475,15 +412,12 @@ function mpgmressh!(x, b, A, M, shifts;
     explicit_residual::Bool = false,
     log::Bool = false,
     verbose::Bool = false,
-    preconmethod = LUFac,
-    preconmaxiter = size(A,2),
-    preconrestart = min(20, size(A,2)),
-    preconAMG = false,
-    preconjacobi = false,
-    preconilu = false,
-    τ=0.1,
-    preconreltol = btol 
+    kwargs... # kw arguments for preconditioner construction
 )
+    if isnothing(preconshifts) && !isnothing(precons)
+        throw(ErrorException("Preconditioner shifts must be provided!"))
+    end
+
     # create IterativeSolvers.history objects for tracking convergence history
     if log
         history = IterativeSolvers.ConvergenceHistory(partial = !log)
@@ -491,22 +425,23 @@ function mpgmressh!(x, b, A, M, shifts;
         history[:explicit_residual] = explicit_residual
         # store precon solve info
         history[:preconmethod] = preconmethod
-        history[:preconmaxiter] = preconmaxiter
-        history[:preconrestart] = preconrestart
-        history[:preconAMG] = preconAMG
-        history[:preconreltol] = preconreltol
+        history[:preconpreconmethod] = preconpreconmethod
+        history[:kwargs] = kwargs
         # reserve residual info 
         IterativeSolvers.reserve!(history, :resmat, maxiter, length(shifts))
         
         setup_time = time_ns()
     end
     # construct preconditioners
-    preconshifts = generate_preconshifts(shifts, nprecons)
-    precons = generate_preconditioners(A, M, preconshifts, preconmethod, maxiter = preconmaxiter, 
-    restart = preconrestart, AMG = preconAMG, jacobi = preconjacobi, iluprec = preconilu, τ = τ, reltol = preconreltol)
-    
+    if isnothing(preconshifts)
+        preconshifts = generate_preconshifts(shifts, nprecons)
+    end
+    if isnothing(precons)
+        precons = generate_preconditioners(A, M, preconshifts,
+        preconmethod, preconpreconmethod; kwargs...)
+    end    
     # instantiate iterable 
-    global iterable = mpgmressh_iterable!(x, b, A, M, shifts, preconshifts,
+    iterable = mpgmressh_iterable!(x, b, A, M, shifts, preconshifts,
     precons, nprecons; btol = btol, atol = atol, maxiter = maxiter,
     convergence = convergence, explicit_residual = explicit_residual)
 
